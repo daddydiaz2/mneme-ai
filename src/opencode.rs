@@ -18,8 +18,8 @@ pub const REVIEW_AGENTS: &[&str] = &[
     "review-risk",
 ];
 
-/// Judgment day agents
-pub const JUDGMENT_AGENTS: &[&str] = &["jd-judge-a", "jd-judge-b", "jd-fix-agent"];
+/// Dual-review agents (renamed from 'jd' to avoid gentle-ai naming)
+pub const JUDGMENT_AGENTS: &[&str] = &["mneme-judge-alpha", "mneme-judge-beta", "mneme-fix"];
 
 /// Model assignment for a specific phase
 #[derive(Debug, Clone)]

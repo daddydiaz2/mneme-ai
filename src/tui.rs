@@ -211,77 +211,41 @@ impl App {
 
     fn handle_agent_install(&mut self, key: KeyCode) -> bool {
         match key {
-            KeyCode::Char('1') => {
-                self.install_log.push("Installing opencode...".to_string());
-                match crate::install::install_agent("opencode") {
-                    Ok(_) => self.install_log.push("✓ OpenCode configured".to_string()),
-                    Err(e) => self.install_log.push(format!("✗ {}", e)),
-                }
-                true
-            }
-            KeyCode::Char('2') => {
-                self.install_log
-                    .push("Installing mneme-orchestrator agents...".to_string());
-                match crate::install::install_opencode_agents() {
-                    Ok(_) => self.install_log.push("✓ Agents created (19)".to_string()),
-                    Err(e) => self.install_log.push(format!("✗ {}", e)),
-                }
-                true
-            }
-            KeyCode::Char('3') => {
-                self.install_log
-                    .push("Installing mneme skills...".to_string());
-                match skills::install_mneme_skills() {
-                    Ok(_) => self.install_log.push("✓ Skills installed".to_string()),
-                    Err(e) => self.install_log.push(format!("✗ {}", e)),
-                }
-                self.skills_list = skills::scan_skills();
-                true
-            }
-            KeyCode::Char('4') => {
-                self.install_log.push("Running doctor...".to_string());
-                // Run doctor inline
-                let mneme_ok = mneme::find_mneme().is_some();
-                self.install_log.push(
-                    if mneme_ok {
-                        "✓ mneme-brain: OK"
-                    } else {
-                        "⚠ mneme-brain: not found"
+            KeyCode::Tab | KeyCode::Enter => {
+                match self.install_step {
+                    0 => { self.install_step = 1; }
+                    1 => {
+                        self.install_log.push("✓ Step 1: OpenCode selected".to_string());
+                        self.install_step = 2;
                     }
-                    .to_string(),
-                );
-                true
-            }
-            KeyCode::Char('5') => {
-                // Full setup
-                self.install_log.clear();
-                self.install_log
-                    .push("🚀 Full ecosystem setup...".to_string());
-
-                match crate::install::install_agent("opencode") {
-                    Ok(_) => self.install_log.push("✓ OpenCode configured".to_string()),
-                    Err(e) => self.install_log.push(format!("✗ {}", e)),
+                    2 => {
+                        self.install_log.push("  Creating mneme-orchestrator...".to_string());
+                        let _ = crate::install::install_agent("opencode");
+                        let _ = crate::install::install_opencode_agents();
+                        self.install_step = 3;
+                    }
+                    3 => {
+                        self.install_log.push("  Installing skills + branding...".to_string());
+                        let _ = skills::install_mneme_skills();
+                        let _ = crate::opencode::customize_opencode();
+                        self.skills_list = skills::scan_skills();
+                        self.install_step = 4;
+                    }
+                    4 => {
+                        self.install_log.push("✅ Setup complete!".to_string());
+                        self.install_step = 5;
+                    }
+                    _ => {}
                 }
-                match crate::install::install_opencode_agents() {
-                    Ok(_) => self
-                        .install_log
-                        .push("✓ Orchestrator agents created".to_string()),
-                    Err(e) => self.install_log.push(format!("✗ {}", e)),
-                }
-                match skills::install_mneme_skills() {
-                    Ok(_) => self
-                        .install_log
-                        .push("✓ Mneme skills installed".to_string()),
-                    Err(e) => self.install_log.push(format!("✗ {}", e)),
-                }
-                self.install_log.push("✅ Full setup complete!".to_string());
-                self.profiles = self.store.list().unwrap_or_default();
-                self.skills_list = skills::scan_skills();
                 true
             }
             KeyCode::Esc | KeyCode::Backspace => {
-                self.screen = Screen::Welcome;
-                self.tab_index = 0;
+                if self.install_step > 0 && self.install_step < 5 {
+                    self.install_step -= 1;
+                } else {
+                    self.screen = Screen::Welcome; self.tab_index = 0;
+                    self.install_step = 0; self.install_log.clear();
+                }
                 true
             }
             KeyCode::Char('q') => false,
@@ -579,73 +543,59 @@ impl App {
     }
 
     fn render_install(&self, f: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(8),
-                Constraint::Min(1),
-                Constraint::Length(3),
-            ])
-            .split(area);
+        let chunks = Layout::default().direction(Direction::Vertical)
+            .constraints([Constraint::Min(1)]).split(area);
 
-        let options = vec![
-            Line::from("Agent Setup:"),
-            Line::from(Span::styled(
-                "  1: Configure OpenCode (MCP + mneme)",
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(Span::styled(
-                "  2: Create orchestrator agents (19 sub-agents)",
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(Span::styled(
-                "  3: Install mneme skills",
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(Span::styled(
-                "  4: Run ecosystem doctor",
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(Span::styled(
-                "  5: 🚀 FULL SETUP (all of the above)",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "  Esc: Back  |  q: Quit",
-                Style::default().fg(Color::DarkGray),
-            )),
+        let wizard_steps = [
+            "Welcome — configure your ecosystem",
+            "Select agent (OpenCode)",
+            "Create mneme-orchestrator agents",
+            "Install skills + branding",
+            "Complete!",
         ];
-        f.render_widget(
-            Paragraph::new(options).block(Block::default().borders(Borders::ALL).title("💻 Setup")),
-            chunks[0],
-        );
+        
+        let mut lines = vec![
+            Line::from(Span::styled("🚀 Ecosystem Setup Wizard", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Line::from(""),
+        ];
 
-        let log: Vec<Line> = self
-            .install_log
-            .iter()
-            .map(|l| {
-                let style = if l.starts_with("✓") {
-                    Style::default().fg(Color::Green)
-                } else if l.starts_with("✗") {
-                    Style::default().fg(Color::Red)
-                } else if l.starts_with("🚀") || l.starts_with("✅") {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                Line::from(Span::styled(l.clone(), style))
-            })
-            .collect();
+        // Show wizard steps with current highlights
+        for (i, step) in wizard_steps.iter().enumerate() {
+            let (icon, style) = if i < self.install_step {
+                ("✅", Style::default().fg(Color::Green))
+            } else if i == self.install_step {
+                ("▶ ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            } else {
+                ("○ ", Style::default().fg(Color::DarkGray))
+            };
+            lines.push(Line::from(Span::styled(format!("  {} {}", icon, step), style)));
+        }
 
-        f.render_widget(
-            Paragraph::new(log).block(Block::default().borders(Borders::ALL).title("Log")),
-            chunks[1],
-        );
+        lines.push(Line::from(""));
+        
+        // Show install log
+        for log_line in &self.install_log {
+            let style = if log_line.starts_with("✓") || log_line.starts_with("✅") {
+                Style::default().fg(Color::Green)
+            } else if log_line.starts_with("✗") {
+                Style::default().fg(Color::Red)
+            } else if log_line.starts_with("🚀") {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(Span::styled(log_line.clone(), style)));
+        }
+
+        // Bottom controls
+        lines.push(Line::from(""));
+        if self.install_step < 5 {
+            lines.push(Line::from(Span::styled("  Tab/Enter: Next step  |  Esc: Back  |  q: Quit", Style::default().fg(Color::DarkGray))));
+        } else {
+            lines.push(Line::from(Span::styled("  Esc: Back to Welcome  |  q: Quit", Style::default().fg(Color::DarkGray))));
+        }
+
+        f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("💻 Install")), chunks[0]);
     }
 
     fn render_profiles(&self, f: &mut Frame, area: Rect) {
