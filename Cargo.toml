@@ -1,6 +1,6 @@
 [package]
 name = "mneme-ai"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "mneme-ai — Ecosystem configurator for AI coding agents. Sets up agents with mneme persistent memory, SDD workflows, skills, and MCP."
 license = "MIT"
@@ -27,6 +27,7 @@ dirs = "5"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 ratatui = { version = "0.27", features = ["all-widgets"] }
+ureq = { version = "3", features = ["json"] }
 tar = "0.4"
 crossterm = { version = "0.27", features = ["event-stream"] }
 reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }

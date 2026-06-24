@@ -81,13 +81,16 @@ pub fn install_agent(agent_name: &str) -> anyhow::Result<()> {
     println!("Installing mneme for {}...", agent.display);
     setup_mcp_config(agent)?;
 
-    // For OpenCode: also generate agents and prompt files
+    // For OpenCode: also generate agents, prompt files, and branding
     if agent_name == "opencode" {
         println!("  Generating mneme-orchestrator agents...");
-        opencode::write_prompt_files()?;
-        let config = opencode::OpenCodeConfig::default();
-        let agents_json = opencode::generate_agents(&config);
-        opencode::write_to_opencode(&agents_json)?;
+        crate::opencode::write_prompt_files()?;
+        let config = crate::opencode::OpenCodeConfig::default();
+        let agents_json = crate::opencode::generate_agents(&config);
+        crate::opencode::write_to_opencode(&agents_json)?;
+
+        println!("  Applying mneme branding...");
+        let _ = crate::opencode::customize_opencode();
     }
 
     println!("✓ {} configured with mneme.", agent.display);
@@ -107,6 +110,12 @@ pub fn install_opencode_agents() -> anyhow::Result<()> {
     let agents_json = crate::opencode::generate_agents(&config);
     crate::opencode::write_to_opencode(&agents_json)?;
     println!("✓ mneme-orchestrator agent installed.");
+    Ok(())
+}
+
+/// Customize OpenCode with mneme branding
+pub fn customize_opencode_branding() -> anyhow::Result<()> {
+    crate::opencode::customize_opencode()?;
     Ok(())
 }
 

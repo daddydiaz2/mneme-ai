@@ -7,6 +7,7 @@ pub mod opencode;
 pub mod profile;
 pub mod skills;
 pub mod tui;
+pub mod update;
 
 use std::path::PathBuf;
 

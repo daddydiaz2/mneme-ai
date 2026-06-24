@@ -16,6 +16,9 @@ pub fn run_doctor() -> anyhow::Result<()> {
     // Check agents
     check_agents()?;
 
+    // Check updates
+    check_updates();
+
     println!();
     println!("{}", "-".repeat(40));
     println!("✅ Doctor check complete.");
@@ -86,6 +89,14 @@ fn check_agents() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn check_updates() {
+    println!();
+    println!("📦 Update check:");
+    crate::update::print_update_status("mneme-brain", "0.2.3");
+    crate::update::print_update_status("mneme-ai", "0.5.0");
+    crate::update::print_update_status("mneme-guardian", "0.1.0");
 }
 
 fn config_dir() -> PathBuf {

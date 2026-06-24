@@ -256,3 +256,77 @@ pub fn write_prompt_files() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Customize OpenCode with mneme branding: update AGENTS.md, add plugins, set author
+pub fn customize_opencode() -> anyhow::Result<()> {
+    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    let opencode_dir = config_dir.join("opencode");
+
+    // 1. Update AGENTS.md with mneme branding
+    let agents_path = opencode_dir.join("AGENTS.md");
+    let content = if agents_path.exists() {
+        std::fs::read_to_string(&agents_path)?
+    } else {
+        String::new()
+    };
+
+    if !content.contains("mneme tools") {
+        let branding = "<!-- mneme-ai:branding -->\n## mneme tools\n\n**Powered by mneme-ai** — Ecosystem configurator for AI coding agents.\nAuthor: Daniel Diaz\n\n";
+        std::fs::write(&agents_path, branding.to_string() + &content)?;
+    }
+
+    // 2. Update tui.json with mneme plugins
+    let tui_path = opencode_dir.join("tui.json");
+    let mut tui_config: serde_json::Value = if tui_path.exists() {
+        let c = std::fs::read_to_string(&tui_path)?;
+        serde_json::from_str(&c).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if !tui_config.is_object() {
+        tui_config = serde_json::json!({});
+    }
+    if tui_config.get("plugin").map_or(true, |p| !p.is_array()) {
+        tui_config["plugin"] = serde_json::json!([]);
+    }
+
+    if let Some(plugins) = tui_config["plugin"].as_array_mut() {
+        if !plugins
+            .iter()
+            .any(|p| p.as_str() == Some("opencode-subagent-statusline"))
+        {
+            plugins.push(serde_json::json!("opencode-subagent-statusline"));
+        }
+    }
+
+    std::fs::write(&tui_path, serde_json::to_string_pretty(&tui_config)?)?;
+
+    // 3. Update agent descriptions in opencode.json with mneme-ai branding
+    let opencode_json_path = opencode_dir.join("opencode.json");
+    if opencode_json_path.exists() {
+        let mut oc_config: serde_json::Value = {
+            let c = std::fs::read_to_string(&opencode_json_path)?;
+            serde_json::from_str(&c).unwrap_or(serde_json::json!({}))
+        };
+
+        if let Some(agents) = oc_config.get_mut("agent").and_then(|a| a.as_object_mut()) {
+            for (_key, agent) in agents.iter_mut() {
+                if let Some(desc) = agent.get_mut("description") {
+                    if let Some(d) = desc.as_str() {
+                        if !d.contains("mneme") && !d.contains("gentle") {
+                            *desc = serde_json::json!(format!("{} — mneme-ai", d));
+                        }
+                    }
+                }
+            }
+            std::fs::write(
+                &opencode_json_path,
+                serde_json::to_string_pretty(&oc_config)?,
+            )?;
+        }
+    }
+
+    println!("✓ OpenCode customized with mneme tools branding");
+    Ok(())
+}

@@ -141,6 +141,7 @@ fn main() -> anyhow::Result<()> {
         Commands::ListAgents => agents::list_agents(),
         Commands::Version => {
             println!("mneme-ai v{}", env!("CARGO_PKG_VERSION"));
+            mneme_ai::update::print_update_status("mneme-ai", env!("CARGO_PKG_VERSION"));
         }
     }
 
