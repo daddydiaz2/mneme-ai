@@ -93,6 +93,10 @@ cargo install mneme-ai         # 🤖  mneme-ai binary
 cargo install mneme-guardian   # 😇  mneme-g binary
 ```
 
+## Donate
+
+☕ [Buy me a coffee](https://www.paypal.com/donate/?hosted_button_id=VDP69Z8GNTAR2)
+
 ## License
 
 MIT
