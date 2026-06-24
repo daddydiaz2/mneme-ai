@@ -99,6 +99,34 @@ pub fn setup_agent(agent_name: &str) -> anyhow::Result<()> {
     install_agent(agent_name)
 }
 
+/// Install the mneme-orchestrator agents in OpenCode
+pub fn install_opencode_agents() -> anyhow::Result<()> {
+    println!("  Generating mneme-orchestrator agents...");
+    crate::opencode::write_prompt_files()?;
+    let config = crate::opencode::OpenCodeConfig::default();
+    let agents_json = crate::opencode::generate_agents(&config);
+    crate::opencode::write_to_opencode(&agents_json)?;
+    println!("✓ mneme-orchestrator agent installed.");
+    Ok(())
+}
+
+/// Sync profiles to opencode.json
+pub fn sync_to_opencode() -> anyhow::Result<()> {
+    let store = crate::profile::ProfileStore::new();
+    store.init()?;
+    let profiles = store.list()?;
+    if profiles.is_empty() {
+        println!("No profiles to sync. Create one first: mneme-ai profile create --name cheap --model opencode/default");
+        return Ok(());
+    }
+    for profile in &profiles {
+        println!("  Syncing profile '{}'...", profile.name);
+    }
+    install_opencode_agents()?;
+    println!("✓ Sync complete. {} profiles available.", profiles.len());
+    Ok(())
+}
+
 /// Write MCP config for a specific agent
 fn setup_mcp_config(agent: &agents::AgentInfo) -> anyhow::Result<()> {
     let config_path = resolve_path(agent.config_path);
