@@ -1,6 +1,6 @@
 [package]
 name = "mneme-ai"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "mneme-ai — Ecosystem configurator for AI coding agents. Sets up agents with mneme persistent memory, SDD workflows, skills, and MCP."
 license = "MIT"
