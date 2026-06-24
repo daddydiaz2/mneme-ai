@@ -1,10 +1,8 @@
-mod cli;
-mod install;
-mod doctor;
-mod agents;
-mod mneme;
-
 use clap::Parser;
+use mneme_ai::agents;
+use mneme_ai::cli::{self, Commands};
+use mneme_ai::doctor;
+use mneme_ai::install;
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -15,16 +13,19 @@ fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
 
     match cli.command {
-        cli::Commands::Init => install::init_config()?,
-        cli::Commands::Install { agent } => install::install_agent(&agent)?,
-        cli::Commands::Setup { agent } => install::setup_agent(&agent)?,
-        cli::Commands::Doctor => doctor::run_doctor()?,
-        cli::Commands::Sync { profile, profile_phase } => {
-            // TODO: full sync implementation
+        Commands::Init => install::init_config()?,
+        Commands::Install { agent } => install::install_agent(&agent)?,
+        Commands::Setup { agent } => install::setup_agent(&agent)?,
+        Commands::Doctor => doctor::run_doctor()?,
+        Commands::Sync {
+            profile,
+            profile_phase,
+        } => {
+            let _ = (profile, profile_phase);
             tracing::info!("Sync not yet implemented in v0.1.0");
         }
-        cli::Commands::ListAgents => agents::list_agents(),
-        cli::Commands::Version => {
+        Commands::ListAgents => agents::list_agents(),
+        Commands::Version => {
             println!("mneme-ai v{}", env!("CARGO_PKG_VERSION"));
         }
     }
