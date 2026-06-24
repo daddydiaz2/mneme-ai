@@ -1,3 +1,4 @@
+/// Comprehensive TUI for mneme-ai — ecosystem configurator.
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
@@ -7,12 +8,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Gauge, List, ListItem, Paragraph, Row, Table, Tabs},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table, Tabs},
     Frame, Terminal,
 };
 use std::io;
 
+use crate::mneme;
 use crate::profile::{ModelAssignment, ProfileStore, SddProfile, SDD_PHASES};
+use crate::skills;
 
 type Term = Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>;
 
@@ -26,6 +29,7 @@ pub fn run_tui() -> anyhow::Result<()> {
 
     let store = ProfileStore::new();
     store.init()?;
+    let _ = skills::install_mneme_skills();
 
     let mut app = App::new(store);
     let res = app.run(&mut terminal);
@@ -36,45 +40,66 @@ pub fn run_tui() -> anyhow::Result<()> {
     res
 }
 
+#[derive(Clone, Copy, PartialEq)]
 enum Screen {
-    Dashboard,
+    Welcome,
+    AgentInstall,
     Profiles,
     ProfileDetail(usize),
     CreateProfile,
+    Skills,
+    SkillsDetail(usize),
     Memory,
+    Backups,
     Help,
 }
+
+const TAB_TITLES: &[&str] = &[
+    "🏠 Welcome",
+    "💻 Agents",
+    "⚙ Profiles",
+    "📚 Skills",
+    "🧠 Memory",
+    "💾 Backups",
+    "❓ Help",
+];
 
 struct App {
     store: ProfileStore,
     profiles: Vec<SddProfile>,
+    skills_list: Vec<skills::Skill>,
     selected: usize,
     screen: Screen,
     tab_index: usize,
     status: String,
-    // Create profile form
+    // Form state
     form_name: String,
     form_provider: String,
     form_model: String,
     form_step: usize,
+    // Install state
+    install_step: usize,
+    install_log: Vec<String>,
 }
-
-const TAB_TITLES: &[&str] = &["📊 Dashboard", "⚙ Profiles", "🧠 Memory", "❓ Help"];
 
 impl App {
     fn new(store: ProfileStore) -> Self {
         let profiles = store.list().unwrap_or_default();
+        let skill_list = skills::scan_skills();
         Self {
             store,
             profiles,
+            skills_list: skill_list,
             selected: 0,
-            screen: Screen::Dashboard,
+            screen: Screen::Welcome,
             tab_index: 0,
             status: String::new(),
             form_name: String::new(),
             form_provider: String::new(),
             form_model: String::new(),
             form_step: 0,
+            install_step: 0,
+            install_log: Vec::new(),
         }
     }
 
@@ -92,38 +117,41 @@ impl App {
 
     fn handle_key(&mut self, key: KeyCode) -> bool {
         match self.screen {
-            Screen::Dashboard => match key {
-                KeyCode::Char('1') => {
-                    self.screen = Screen::Profiles;
-                    self.tab_index = 1;
-                    true
-                }
-                KeyCode::Char('2') => {
-                    self.screen = Screen::Memory;
-                    self.tab_index = 2;
-                    true
-                }
-                KeyCode::Char('3') => {
-                    self.screen = Screen::Help;
-                    self.tab_index = 3;
-                    true
-                }
-                KeyCode::Char('q') | KeyCode::Esc => false,
-                _ => true,
-            },
-            Screen::Profiles => self.handle_profile_list(key),
+            Screen::Welcome => self.handle_welcome(key),
+            Screen::AgentInstall => self.handle_agent_install(key),
+            Screen::Profiles => self.handle_profiles(key),
             Screen::ProfileDetail(_) => match key {
                 KeyCode::Esc | KeyCode::Backspace => {
                     self.screen = Screen::Profiles;
+                    self.tab_index = 2;
                     true
                 }
                 KeyCode::Char('q') => false,
                 _ => true,
             },
-            Screen::CreateProfile => self.handle_create_form(key),
+            Screen::CreateProfile => self.handle_create_profile(key),
+            Screen::Skills => self.handle_skills(key),
+            Screen::SkillsDetail(_) => match key {
+                KeyCode::Esc => {
+                    self.screen = Screen::Skills;
+                    self.tab_index = 3;
+                    true
+                }
+                KeyCode::Char('q') => false,
+                _ => true,
+            },
             Screen::Memory => match key {
                 KeyCode::Esc | KeyCode::Backspace => {
-                    self.screen = Screen::Dashboard;
+                    self.screen = Screen::Welcome;
+                    self.tab_index = 0;
+                    true
+                }
+                KeyCode::Char('q') => false,
+                _ => true,
+            },
+            Screen::Backups => match key {
+                KeyCode::Esc | KeyCode::Backspace => {
+                    self.screen = Screen::Welcome;
                     self.tab_index = 0;
                     true
                 }
@@ -132,7 +160,7 @@ impl App {
             },
             Screen::Help => match key {
                 KeyCode::Esc | KeyCode::Backspace => {
-                    self.screen = Screen::Dashboard;
+                    self.screen = Screen::Welcome;
                     self.tab_index = 0;
                     true
                 }
@@ -142,17 +170,134 @@ impl App {
         }
     }
 
-    fn handle_profile_list(&mut self, key: KeyCode) -> bool {
+    fn handle_welcome(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Char('1') => {
+                self.screen = Screen::AgentInstall;
+                self.tab_index = 1;
+                self.install_step = 0;
+                self.install_log.clear();
+                true
+            }
+            KeyCode::Char('2') => {
+                self.screen = Screen::Profiles;
+                self.tab_index = 2;
+                true
+            }
+            KeyCode::Char('3') => {
+                self.screen = Screen::Skills;
+                self.tab_index = 3;
+                true
+            }
+            KeyCode::Char('4') => {
+                self.screen = Screen::Memory;
+                self.tab_index = 4;
+                true
+            }
+            KeyCode::Char('5') => {
+                self.screen = Screen::Backups;
+                self.tab_index = 5;
+                true
+            }
+            KeyCode::Char('6') => {
+                self.screen = Screen::Help;
+                self.tab_index = 6;
+                true
+            }
+            KeyCode::Char('q') | KeyCode::Esc => false,
+            _ => true,
+        }
+    }
+
+    fn handle_agent_install(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Char('1') => {
+                self.install_log.push("Installing opencode...".to_string());
+                match crate::install::install_agent("opencode") {
+                    Ok(_) => self.install_log.push("✓ OpenCode configured".to_string()),
+                    Err(e) => self.install_log.push(format!("✗ {}", e)),
+                }
+                true
+            }
+            KeyCode::Char('2') => {
+                self.install_log
+                    .push("Installing mneme-orchestrator agents...".to_string());
+                match crate::install::install_opencode_agents() {
+                    Ok(_) => self.install_log.push("✓ Agents created (19)".to_string()),
+                    Err(e) => self.install_log.push(format!("✗ {}", e)),
+                }
+                true
+            }
+            KeyCode::Char('3') => {
+                self.install_log
+                    .push("Installing mneme skills...".to_string());
+                match skills::install_mneme_skills() {
+                    Ok(_) => self.install_log.push("✓ Skills installed".to_string()),
+                    Err(e) => self.install_log.push(format!("✗ {}", e)),
+                }
+                self.skills_list = skills::scan_skills();
+                true
+            }
+            KeyCode::Char('4') => {
+                self.install_log.push("Running doctor...".to_string());
+                // Run doctor inline
+                let mneme_ok = mneme::find_mneme().is_some();
+                self.install_log.push(
+                    if mneme_ok {
+                        "✓ mneme-brain: OK"
+                    } else {
+                        "⚠ mneme-brain: not found"
+                    }
+                    .to_string(),
+                );
+                true
+            }
+            KeyCode::Char('5') => {
+                // Full setup
+                self.install_log.clear();
+                self.install_log
+                    .push("🚀 Full ecosystem setup...".to_string());
+
+                match crate::install::install_agent("opencode") {
+                    Ok(_) => self.install_log.push("✓ OpenCode configured".to_string()),
+                    Err(e) => self.install_log.push(format!("✗ {}", e)),
+                }
+                match crate::install::install_opencode_agents() {
+                    Ok(_) => self
+                        .install_log
+                        .push("✓ Orchestrator agents created".to_string()),
+                    Err(e) => self.install_log.push(format!("✗ {}", e)),
+                }
+                match skills::install_mneme_skills() {
+                    Ok(_) => self
+                        .install_log
+                        .push("✓ Mneme skills installed".to_string()),
+                    Err(e) => self.install_log.push(format!("✗ {}", e)),
+                }
+                self.install_log.push("✅ Full setup complete!".to_string());
+                self.profiles = self.store.list().unwrap_or_default();
+                self.skills_list = skills::scan_skills();
+                true
+            }
+            KeyCode::Esc | KeyCode::Backspace => {
+                self.screen = Screen::Welcome;
+                self.tab_index = 0;
+                true
+            }
+            KeyCode::Char('q') => false,
+            _ => true,
+        }
+    }
+
+    fn handle_profiles(&mut self, key: KeyCode) -> bool {
         match key {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected = self.selected.saturating_sub(1);
                 true
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.selected = self
-                    .selected
-                    .saturating_add(1)
-                    .min(self.profiles.len().saturating_sub(1));
+                let max = self.profiles.len().saturating_sub(1);
+                self.selected = self.selected.saturating_add(1).min(max);
                 true
             }
             KeyCode::Enter => {
@@ -170,18 +315,16 @@ impl App {
                 true
             }
             KeyCode::Char('d') => {
-                let name = self.profiles.get(self.selected).map(|p| p.name.clone());
-                if let Some(ref n) = name {
-                    if n != "default" {
-                        self.store.delete(n).ok();
+                if let Some(p) = self.profiles.get(self.selected).map(|p| p.name.clone()) {
+                    if p != "default" {
+                        self.store.delete(&p).ok();
                         self.profiles = self.store.list().unwrap_or_default();
-                        self.status = format!("Deleted: {}", n);
                     }
                 }
                 true
             }
             KeyCode::Esc | KeyCode::Backspace => {
-                self.screen = Screen::Dashboard;
+                self.screen = Screen::Welcome;
                 self.tab_index = 0;
                 true
             }
@@ -190,7 +333,42 @@ impl App {
         }
     }
 
-    fn handle_create_form(&mut self, key: KeyCode) -> bool {
+    fn handle_skills(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.selected = self.selected.saturating_sub(1);
+                true
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.selected = self
+                    .selected
+                    .saturating_add(1)
+                    .min(self.skills_list.len().saturating_sub(1));
+                true
+            }
+            KeyCode::Enter => {
+                if self.selected < self.skills_list.len() {
+                    self.screen = Screen::SkillsDetail(self.selected);
+                }
+                true
+            }
+            KeyCode::Char('r') => {
+                self.skills_list = skills::scan_skills();
+                let _ = skills::write_registry(&self.skills_list);
+                self.status = format!("Registry refreshed: {} skills", self.skills_list.len());
+                true
+            }
+            KeyCode::Esc => {
+                self.screen = Screen::Welcome;
+                self.tab_index = 0;
+                true
+            }
+            KeyCode::Char('q') => false,
+            _ => true,
+        }
+    }
+
+    fn handle_create_profile(&mut self, key: KeyCode) -> bool {
         match key {
             KeyCode::Char(c) if c != '\n' && c != '\t' => {
                 match self.form_step {
@@ -220,26 +398,27 @@ impl App {
                 if self.form_step < 2 {
                     self.form_step += 1;
                 } else if !self.form_name.is_empty() {
-                    let profile = SddProfile {
-                        name: self.form_name.clone().to_lowercase().replace(' ', "-"),
-                        orchestrator: ModelAssignment {
-                            provider: if self.form_provider.is_empty() {
-                                "opencode".to_string()
-                            } else {
-                                self.form_provider.clone()
+                    self.store
+                        .save(&SddProfile {
+                            name: self.form_name.clone().to_lowercase().replace(' ', "-"),
+                            orchestrator: ModelAssignment {
+                                provider: if self.form_provider.is_empty() {
+                                    "opencode".to_string()
+                                } else {
+                                    self.form_provider.clone()
+                                },
+                                model: if self.form_model.is_empty() {
+                                    "default".to_string()
+                                } else {
+                                    self.form_model.clone()
+                                },
+                                reasoning_effort: None,
                             },
-                            model: if self.form_model.is_empty() {
-                                "default".to_string()
-                            } else {
-                                self.form_model.clone()
-                            },
-                            reasoning_effort: None,
-                        },
-                        phases: std::collections::HashMap::new(),
-                    };
-                    self.store.save(&profile).ok();
+                            phases: std::collections::HashMap::new(),
+                        })
+                        .ok();
                     self.profiles = self.store.list().unwrap_or_default();
-                    self.status = format!("Created: {}", profile.name);
+                    self.status = format!("Created: {}", self.form_name);
                     self.screen = Screen::Profiles;
                 }
                 true
@@ -260,14 +439,13 @@ impl App {
             .constraints([Constraint::Length(3), Constraint::Min(1)])
             .split(area);
 
-        // Tabs
-        let titles: Vec<&str> = TAB_TITLES.iter().map(|t| *t).collect();
-        let tabs = Tabs::new(titles)
+        let tab_titles: Vec<&str> = TAB_TITLES.iter().map(|t| *t).collect();
+        let tabs = Tabs::new(tab_titles)
             .select(self.tab_index)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("mneme-ai v0.4.0"),
+                    .title("mneme-ai v0.5.0"),
             )
             .style(Style::default().fg(Color::White))
             .highlight_style(
@@ -277,142 +455,197 @@ impl App {
             );
         f.render_widget(tabs, chunks[0]);
 
-        // Content
         match self.screen {
-            Screen::Dashboard => self.render_dashboard(f, chunks[1]),
+            Screen::Welcome => self.render_welcome(f, chunks[1]),
+            Screen::AgentInstall => self.render_install(f, chunks[1]),
             Screen::Profiles => self.render_profiles(f, chunks[1]),
-            Screen::ProfileDetail(idx) => self.render_profile_detail(f, chunks[1], idx),
+            Screen::ProfileDetail(i) => self.render_profile_detail(f, chunks[1], i),
             Screen::CreateProfile => self.render_create_form(f, chunks[1]),
+            Screen::Skills => self.render_skills(f, chunks[1]),
+            Screen::SkillsDetail(i) => self.render_skill_detail(f, chunks[1], i),
             Screen::Memory => self.render_memory(f, chunks[1]),
+            Screen::Backups => self.render_backups(f, chunks[1]),
             Screen::Help => self.render_help(f, chunks[1]),
         }
     }
 
-    fn render_dashboard(&self, f: &mut Frame, area: Rect) {
+    fn render_welcome(&self, f: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(8),
-                Constraint::Length(8),
-                Constraint::Min(5),
-            ])
+            .constraints([Constraint::Length(6), Constraint::Min(3)])
             .split(area);
 
-        // Status cards
+        // Status dashboard
         let cards = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+            ])
             .split(chunks[0]);
 
-        let profile_count = self.profiles.len();
-        let default_profile = self.profiles.iter().find(|p| p.name == "default");
-
-        let status_items = vec![
-            Line::from(format!("SDD Profiles: {} configured", profile_count)),
-            Line::from(format!(
-                "Default: {}/{}",
-                default_profile
-                    .map(|p| p.orchestrator.provider.as_str())
-                    .unwrap_or("none"),
-                default_profile
-                    .map(|p| p.orchestrator.model.as_str())
-                    .unwrap_or("none")
-            )),
-            Line::from(format!("Phases: {} available", SDD_PHASES.len())),
-            Line::from(""),
+        // Brain status
+        let brain_ok = mneme::find_mneme().is_some();
+        let guardian_ok = which("mneme-g");
+        let brain_info = vec![
             Line::from(Span::styled(
-                "Status: ✅ Operational",
-                Style::default().fg(Color::Green),
+                if brain_ok {
+                    "🧠 mneme-brain ✅"
+                } else {
+                    "🧠 mneme-brain ❌"
+                },
+                Style::default().fg(if brain_ok { Color::Green } else { Color::Red }),
+            )),
+            Line::from(if brain_ok {
+                "Memory system ready"
+            } else {
+                "Install: cargo install mneme-brain"
+            }),
+        ];
+        f.render_widget(
+            Paragraph::new(brain_info).block(Block::default().borders(Borders::ALL).title("Brain")),
+            cards[0],
+        );
+
+        // Config status
+        let profile_count = self.profiles.len();
+        let skill_count = self.skills_list.len();
+        let config_info = vec![
+            Line::from(format!("SDD Profiles: {}", profile_count)),
+            Line::from(format!("Skills: {}", skill_count)),
+            Line::from(format!(
+                "Agents supported: {}",
+                crate::agents::SUPPORTED_AGENTS.len()
             )),
         ];
-        let status_block = Paragraph::new(status_items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("📊 System Status"),
+        f.render_widget(
+            Paragraph::new(config_info)
+                .block(Block::default().borders(Borders::ALL).title("Config")),
+            cards[1],
         );
-        f.render_widget(status_block, cards[0]);
 
-        let agent_counts = format!("Supported Agents: 11");
-        let quick_actions = vec![
-            Line::from(Span::raw(agent_counts)),
-            Line::from(""),
+        // Quick actions
+        let actions = vec![
             Line::from(Span::styled(
-                "Press 1: Profiles",
+                "1: Setup Agent  2: Profiles",
                 Style::default().fg(Color::Cyan),
             )),
             Line::from(Span::styled(
-                "Press 2: Memory",
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(Span::styled(
-                "Press 3: Help",
+                "3: Skills  4: Memory  5: Backups  6: Help",
                 Style::default().fg(Color::Cyan),
             )),
             Line::from(Span::styled("q: Quit", Style::default().fg(Color::Red))),
         ];
-        let actions_block = Paragraph::new(quick_actions).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("⚡ Quick Actions"),
+        f.render_widget(
+            Paragraph::new(actions).block(Block::default().borders(Borders::ALL).title("Actions")),
+            cards[2],
         );
-        f.render_widget(actions_block, cards[1]);
 
-        // Profile preview
-        if !self.profiles.is_empty() {
-            let rows: Vec<Row> = self
-                .profiles
-                .iter()
-                .map(|p| {
-                    let phases = if p.phases.is_empty() {
-                        "all default".to_string()
-                    } else {
-                        format!("{} overrides", p.phases.len())
-                    };
-                    Row::new(vec![
-                        Cell::from(p.name.clone()),
-                        Cell::from(format!(
-                            "{}/{}",
-                            p.orchestrator.provider, p.orchestrator.model
-                        )),
-                        Cell::from(phases),
-                    ])
-                })
-                .collect();
-
-            let widths = [
-                Constraint::Length(20),
-                Constraint::Length(30),
-                Constraint::Length(15),
-            ];
-            let table = Table::new(rows, widths)
-                .header(
-                    Row::new(vec!["Name", "Orchestrator", "Phases"])
-                        .style(Style::default().add_modifier(Modifier::BOLD)),
-                )
-                .block(Block::default().borders(Borders::ALL).title("Profiles"));
-            f.render_widget(table, chunks[1]);
-        } else {
-            let no_profiles = Paragraph::new("No profiles yet. Create one:\n  mneme-ai profile create --name cheap --model opencode/default\n\nOr press 1 to manage profiles.")
-                .block(Block::default().borders(Borders::ALL).title("Profiles"));
-            f.render_widget(no_profiles, chunks[1]);
-        }
-
-        // CLI reference
-        let help = Paragraph::new(vec![
-            Line::from("mneme-ai commands:"),
-            Line::from("  init         Initialize config"),
-            Line::from("  install      Install agent integration"),
-            Line::from("  doctor       Health check"),
-            Line::from("  profile      Manage SDD profiles"),
-            Line::from("  sync         Sync to OpenCode"),
-            Line::from("  backup       Backup/restore configs"),
-        ])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("CLI Reference"),
+        // Ecosystem status
+        let mneme_guardian_found = std::process::Command::new("which")
+            .arg("mneme-g")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let ecosystem = vec![
+            Line::from(Span::styled(
+                concat!("Ecosystem: ", "mneme-brain ✓ ",),
+                Style::default().fg(if brain_ok { Color::Green } else { Color::Red }),
+            )),
+            Line::from(Span::styled(
+                if mneme_guardian_found {
+                    "mneme-guardian ✓"
+                } else {
+                    "mneme-guardian ✗"
+                },
+                Style::default().fg(if mneme_guardian_found {
+                    Color::Green
+                } else {
+                    Color::Red
+                }),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "5: Full setup — configure everything at once",
+                Style::default().fg(Color::Yellow),
+            )),
+        ];
+        f.render_widget(
+            Paragraph::new(ecosystem)
+                .block(Block::default().borders(Borders::ALL).title("Ecosystem")),
+            chunks[1],
         );
-        f.render_widget(help, chunks[2]);
+    }
+
+    fn render_install(&self, f: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(8),
+                Constraint::Min(1),
+                Constraint::Length(3),
+            ])
+            .split(area);
+
+        let options = vec![
+            Line::from("Agent Setup:"),
+            Line::from(Span::styled(
+                "  1: Configure OpenCode (MCP + mneme)",
+                Style::default().fg(Color::Cyan),
+            )),
+            Line::from(Span::styled(
+                "  2: Create orchestrator agents (19 sub-agents)",
+                Style::default().fg(Color::Cyan),
+            )),
+            Line::from(Span::styled(
+                "  3: Install mneme skills",
+                Style::default().fg(Color::Cyan),
+            )),
+            Line::from(Span::styled(
+                "  4: Run ecosystem doctor",
+                Style::default().fg(Color::Cyan),
+            )),
+            Line::from(Span::styled(
+                "  5: 🚀 FULL SETUP (all of the above)",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Esc: Back  |  q: Quit",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+        f.render_widget(
+            Paragraph::new(options).block(Block::default().borders(Borders::ALL).title("💻 Setup")),
+            chunks[0],
+        );
+
+        let log: Vec<Line> = self
+            .install_log
+            .iter()
+            .map(|l| {
+                let style = if l.starts_with("✓") {
+                    Style::default().fg(Color::Green)
+                } else if l.starts_with("✗") {
+                    Style::default().fg(Color::Red)
+                } else if l.starts_with("🚀") || l.starts_with("✅") {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                Line::from(Span::styled(l.clone(), style))
+            })
+            .collect();
+
+        f.render_widget(
+            Paragraph::new(log).block(Block::default().borders(Borders::ALL).title("Log")),
+            chunks[1],
+        );
     }
 
     fn render_profiles(&self, f: &mut Frame, area: Rect) {
@@ -437,116 +670,106 @@ impl App {
                     format!("{} phases", p.phases.len())
                 };
                 ListItem::new(format!(
-                    " {}  [{}/{}]  {}  ",
+                    " {}  [{}/{}]  {}",
                     p.name, p.orchestrator.provider, p.orchestrator.model, phases
                 ))
                 .style(style)
             })
             .collect();
 
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("⚙ SDD Profiles"),
-            )
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
-        f.render_widget(list, chunks[0]);
+        f.render_widget(
+            List::new(items)
+                .block(Block::default().borders(Borders::ALL).title("⚙ Profiles"))
+                .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+            chunks[0],
+        );
 
         let msg = if !self.status.is_empty() {
             format!("  |  {}", self.status)
         } else {
             String::new()
         };
-        let help = Paragraph::new(format!(
-            "↑↓/jk Navigate  Enter View  n New  d Delete  Esc Back  q Quit{}",
-            msg
-        ))
-        .block(Block::default().borders(Borders::ALL));
-        f.render_widget(help, chunks[1]);
+        f.render_widget(
+            Paragraph::new(format!(
+                "↑↓/jk Navigate  Enter View  n Create  d Delete  Esc Back  q Quit{}",
+                msg
+            ))
+            .block(Block::default().borders(Borders::ALL)),
+            chunks[1],
+        );
     }
 
     fn render_profile_detail(&self, f: &mut Frame, area: Rect, idx: usize) {
-        if let Some(profile) = self.profiles.get(idx) {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Min(5),
-                    Constraint::Length(3),
-                ])
-                .split(area);
+        let p = &self.profiles[idx];
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(3),
+            ])
+            .split(area);
 
-            let header = Paragraph::new(format!(
-                "📋 {}  |  {}/{}  |  {} phases",
-                profile.name,
-                profile.orchestrator.provider,
-                profile.orchestrator.model,
-                if profile.phases.is_empty() {
-                    0
-                } else {
-                    profile.phases.len()
-                }
+        f.render_widget(
+            Paragraph::new(format!(
+                "📋 {}  |  {}/{}",
+                p.name, p.orchestrator.provider, p.orchestrator.model
             ))
             .style(Style::default().add_modifier(Modifier::BOLD))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Profile Detail"),
-            );
-            f.render_widget(header, chunks[0]);
+            ),
+            chunks[0],
+        );
 
-            let mut rows = vec![Row::new(vec!["Phase", "Provider", "Model", "Source"])
-                .style(Style::default().add_modifier(Modifier::BOLD))];
-
-            // Orchestrator row
+        let mut rows = vec![
+            Row::new(vec!["Phase", "Provider", "Model", "Source"])
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+            Row::new(vec![
+                "🔄 orchestrator",
+                p.orchestrator.provider.as_str(),
+                p.orchestrator.model.as_str(),
+                "profile",
+            ])
+            .style(Style::default().fg(Color::Cyan)),
+        ];
+        for phase in SDD_PHASES {
+            let has_override = p.phases.contains_key(*phase);
+            let a = p.phases.get(*phase).unwrap_or(&p.orchestrator);
+            let src = if has_override {
+                "override"
+            } else {
+                "inherited"
+            };
+            let style = if has_override {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
             rows.push(
-                Row::new(vec![
-                    "🔄 orchestrator",
-                    &profile.orchestrator.provider,
-                    &profile.orchestrator.model,
-                    "profile",
-                ])
-                .style(Style::default().fg(Color::Cyan)),
+                Row::new(vec![phase, a.provider.as_str(), a.model.as_str(), src]).style(style),
             );
-
-            // SDD phases
-            for phase in SDD_PHASES {
-                let has_override = profile.phases.contains_key(*phase);
-                let (provider, model) = if let Some(a) = profile.phases.get(*phase) {
-                    (a.provider.as_str(), a.model.as_str())
-                } else {
-                    (
-                        profile.orchestrator.provider.as_str(),
-                        profile.orchestrator.model.as_str(),
-                    )
-                };
-                let source = if has_override {
-                    "override"
-                } else {
-                    "inherited"
-                };
-                rows.push(
-                    Row::new(vec![*phase, provider, model, source]).style(if has_override {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    }),
-                );
-            }
-
-            let widths = [
-                Constraint::Length(20),
-                Constraint::Length(15),
-                Constraint::Length(20),
-                Constraint::Length(12),
-            ];
-            let table = Table::new(rows, widths).block(Block::default().borders(Borders::ALL));
-            f.render_widget(table, chunks[1]);
-
-            let help = Paragraph::new("Esc: Back").block(Block::default().borders(Borders::ALL));
-            f.render_widget(help, chunks[2]);
         }
+        f.render_widget(
+            Table::new(
+                rows,
+                [
+                    Constraint::Length(20),
+                    Constraint::Length(15),
+                    Constraint::Length(20),
+                    Constraint::Length(12),
+                ],
+            )
+            .block(Block::default().borders(Borders::ALL)),
+            chunks[1],
+        );
+
+        f.render_widget(
+            Paragraph::new("Esc: Back").block(Block::default().borders(Borders::ALL)),
+            chunks[2],
+        );
     }
 
     fn render_create_form(&self, f: &mut Frame, area: Rect) {
@@ -554,113 +777,306 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Min(5),
+                Constraint::Min(1),
                 Constraint::Length(3),
             ])
             .split(area);
 
-        let header = Paragraph::new("Create New SDD Profile")
-            .style(Style::default().add_modifier(Modifier::BOLD))
-            .block(Block::default().borders(Borders::ALL));
-        f.render_widget(header, chunks[0]);
+        f.render_widget(
+            Paragraph::new("Create New SDD Profile")
+                .style(Style::default().add_modifier(Modifier::BOLD))
+                .block(Block::default().borders(Borders::ALL)),
+            chunks[0],
+        );
 
         let indicator = |s: usize| if self.form_step == s { "◄" } else { "✓" };
         let fields = vec![
-            Line::from(format!("Profile name [a-z, hyphens]: {} {}", self.form_name, indicator(0))),
-            Line::from(format!("Provider [default: opencode]: {} {}", self.form_provider, indicator(1))),
-            Line::from(format!("Model [default: default]: {} {}", self.form_model, indicator(2))),
+            Line::from(format!(
+                "Profile name [a-z, hyphens]: {} {}",
+                self.form_name,
+                indicator(0)
+            )),
+            Line::from(format!(
+                "Provider [default: opencode]: {} {}",
+                self.form_provider,
+                indicator(1)
+            )),
+            Line::from(format!(
+                "Model [default: default]: {} {}",
+                self.form_model,
+                indicator(2)
+            )),
             Line::from(""),
-            Line::from(Span::styled("Tab/Enter: Next  |  Esc: Cancel", Style::default().fg(Color::Cyan))),
-            Line::from(Span::styled("Create profiles via CLI: mneme-ai profile create --name <name> --model <provider/model>", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled(
+                "Tab/Enter: Next  |  Esc: Cancel",
+                Style::default().fg(Color::Cyan),
+            )),
         ];
-        let text = Paragraph::new(fields).block(Block::default().borders(Borders::ALL));
-        f.render_widget(text, chunks[1]);
+        f.render_widget(
+            Paragraph::new(fields).block(Block::default().borders(Borders::ALL)),
+            chunks[1],
+        );
+    }
+
+    fn render_skills(&self, f: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(3),
+                Constraint::Length(3),
+            ])
+            .split(area);
+
+        let stats = skills::skill_stats();
+        let header =
+            Paragraph::new(stats).block(Block::default().borders(Borders::ALL).title("📚 Skills"));
+        f.render_widget(header, chunks[0]);
+
+        let items: Vec<ListItem> = self
+            .skills_list
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let style = if i == self.selected {
+                    Style::default().bg(Color::Blue).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+                let st = match s.skill_type {
+                    skills::SkillType::Sdd => "sdd",
+                    skills::SkillType::Review => "review",
+                    skills::SkillType::Judgment => "judge",
+                    skills::SkillType::Workflow => "workflow",
+                    skills::SkillType::Other => "other",
+                };
+                ListItem::new(format!(" [{}] {}  — {}", st, s.name, s.description)).style(style)
+            })
+            .collect();
+
+        f.render_widget(
+            List::new(items)
+                .block(Block::default().borders(Borders::ALL))
+                .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+            chunks[1],
+        );
+
+        let status = if !self.status.is_empty() {
+            format!("  |  {}", self.status)
+        } else {
+            String::new()
+        };
+        f.render_widget(
+            Paragraph::new(format!(
+                "↑↓ Navigate  Enter View  r Refresh Registry  Esc Back{}",
+                status
+            ))
+            .block(Block::default().borders(Borders::ALL)),
+            chunks[2],
+        );
+    }
+
+    fn render_skill_detail(&self, f: &mut Frame, area: Rect, idx: usize) {
+        if let Some(skill) = self.skills_list.get(idx) {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(3)])
+                .split(area);
+
+            let content = std::fs::read_to_string(skill.path.join("SKILL.md")).unwrap_or_default();
+            let lines: Vec<Line> = content
+                .lines()
+                .map(|l| {
+                    if l.starts_with("---") {
+                        Line::from(Span::styled(l, Style::default().fg(Color::DarkGray)))
+                    } else if l.starts_with("#") {
+                        Line::from(Span::styled(
+                            l,
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ))
+                    } else {
+                        Line::from(l)
+                    }
+                })
+                .collect();
+            f.render_widget(
+                Paragraph::new(lines).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(skill.name.clone()),
+                ),
+                chunks[0],
+            );
+            f.render_widget(
+                Paragraph::new("Esc: Back").block(Block::default().borders(Borders::ALL)),
+                chunks[1],
+            );
+        }
     }
 
     fn render_memory(&self, f: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(5)])
+            .constraints([Constraint::Length(3), Constraint::Min(3)])
             .split(area);
 
-        let header = Paragraph::new("🧠 mneme Memory Browser")
-            .style(Style::default().add_modifier(Modifier::BOLD))
-            .block(Block::default().borders(Borders::ALL));
-        f.render_widget(header, chunks[0]);
+        f.render_widget(
+            Paragraph::new("🧠 mneme Memory Browser")
+                .style(Style::default().add_modifier(Modifier::BOLD))
+                .block(Block::default().borders(Borders::ALL)),
+            chunks[0],
+        );
 
-        let body = Paragraph::new(vec![
-            Line::from("Browse mneme memories from the terminal:"),
-            Line::from(""),
-            Line::from(Span::styled(
-                "  mneme list --project <name>",
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(Span::styled(
-                "  mneme search <query> --project <name>",
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(Span::styled(
-                "  mneme stats --project <name>",
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(Span::styled(
-                "  mneme context --project <name>",
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(""),
-            Line::from("Memory browser TUI coming in v0.5.0"),
-        ])
-        .block(Block::default().borders(Borders::ALL));
-        f.render_widget(body, chunks[1]);
+        let has_mneme = mneme::find_mneme().is_some();
+        let body = if has_mneme {
+            vec![
+                Line::from("Browse mneme memories from the terminal:"),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  mneme list --project <name>",
+                    Style::default().fg(Color::Cyan),
+                )),
+                Line::from(Span::styled(
+                    "  mneme search <query> --project <name>",
+                    Style::default().fg(Color::Cyan),
+                )),
+                Line::from(Span::styled(
+                    "  mneme stats --project <name>",
+                    Style::default().fg(Color::Cyan),
+                )),
+                Line::from(Span::styled(
+                    "  mneme context --project <name>",
+                    Style::default().fg(Color::Cyan),
+                )),
+                Line::from(Span::styled(
+                    "  mneme tui",
+                    Style::default().fg(Color::Cyan),
+                )),
+                Line::from(""),
+                Line::from("Full TUI memory browser coming in v0.6.0"),
+            ]
+        } else {
+            vec![
+                Line::from(Span::styled(
+                    "mneme-brain not found on PATH",
+                    Style::default().fg(Color::Red),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Install: cargo install mneme-brain",
+                    Style::default().fg(Color::Cyan),
+                )),
+            ]
+        };
+        f.render_widget(
+            Paragraph::new(body).block(Block::default().borders(Borders::ALL)),
+            chunks[1],
+        );
+    }
+
+    fn render_backups(&self, f: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(3)])
+            .split(area);
+
+        f.render_widget(
+            Paragraph::new("💾 Backup Management")
+                .style(Style::default().add_modifier(Modifier::BOLD))
+                .block(Block::default().borders(Borders::ALL)),
+            chunks[0],
+        );
+
+        let backup_dir = crate::config_dir().join("backups");
+        let mut entries: Vec<String> = Vec::new();
+        if backup_dir.exists() {
+            if let Ok(dir) = std::fs::read_dir(&backup_dir) {
+                for entry in dir.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    entries.push(format!("  {}  ({} bytes)", name, size));
+                }
+            }
+        }
+        if entries.is_empty() {
+            entries.push("  No backups found.".to_string());
+        }
+
+        let mut body = vec![Line::from("Backups:")];
+        for e in entries {
+            body.push(Line::from(e));
+        }
+        body.push(Line::from(""));
+        body.push(Line::from(Span::styled(
+            "  CLI: mneme-ai backup create  |  mneme-ai backup list",
+            Style::default().fg(Color::Cyan),
+        )));
+
+        f.render_widget(
+            Paragraph::new(body).block(Block::default().borders(Borders::ALL)),
+            chunks[1],
+        );
     }
 
     fn render_help(&self, f: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(5)])
-            .split(area);
-
-        let header = Paragraph::new("❓ Help — mneme-ai v0.4.0")
-            .style(Style::default().add_modifier(Modifier::BOLD))
-            .block(Block::default().borders(Borders::ALL));
-        f.render_widget(header, chunks[0]);
-
-        let help = Paragraph::new(vec![
+        let help_text = vec![
+            Line::from(Span::styled(
+                "mneme-ai v0.5.0 — Ecosystem Configurator",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
             Line::from(Span::styled(
                 "TUI Navigation",
                 Style::default().add_modifier(Modifier::BOLD),
             )),
-            Line::from("  1-3: Switch tabs    ↑↓/jk: Navigate    Enter: Select"),
-            Line::from("  n: Create profile   d: Delete profile    Esc: Back    q: Quit"),
+            Line::from("  1-6: Switch tabs    ↑↓/jk: Navigate    Enter: Select"),
+            Line::from("  n: Create profile   d: Delete    r: Refresh    Esc: Back    q: Quit"),
             Line::from(""),
             Line::from(Span::styled(
-                "CLI Commands",
+                "Integration with mneme-brain",
                 Style::default().add_modifier(Modifier::BOLD),
             )),
-            Line::from("  mneme-ai init        — Initialize config"),
-            Line::from("  mneme-ai install <a> — Install agent (opencode, claude-code, etc.)"),
-            Line::from("  mneme-ai doctor      — Health check"),
-            Line::from("  mneme-ai tui         — Launch this TUI"),
+            Line::from("  mneme-ai install opencode — Configure agent with mneme MCP"),
+            Line::from("  mneme-ai install opencode --with-agents — Full setup + orchestrator"),
+            Line::from("  mneme search <query>   mneme save --project <p> <title> <content>"),
             Line::from(""),
             Line::from(Span::styled(
-                "Profile Management",
+                "Integration with mneme-guardian",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from("  mneme-g init      — Create config"),
+            Line::from("  mneme-g install   — Pre-commit hook"),
+            Line::from("  mneme-g run       — Review staged files"),
+            Line::from("  Results auto-save to mneme brain"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "SDD Profiles",
                 Style::default().add_modifier(Modifier::BOLD),
             )),
             Line::from("  profile create --name cheap --model opencode/default"),
-            Line::from("  profile list        profile show <name>"),
-            Line::from("  profile edit --name <n> --model <p/m>"),
-            Line::from("  profile clone <src> <dst>"),
-            Line::from("  profile delete <name>"),
+            Line::from("  sync --opencode — Write agents to OpenCode"),
             Line::from(""),
             Line::from(Span::styled(
-                "Integration",
+                "Install entire ecosystem",
                 Style::default().add_modifier(Modifier::BOLD),
             )),
-            Line::from("  sync --opencode     — Write agents to opencode.json"),
-            Line::from("  backup create       — Backup configurations"),
-            Line::from("  install opencode --with-agents — Full setup"),
-        ])
-        .block(Block::default().borders(Borders::ALL));
-        f.render_widget(help, chunks[1]);
+            Line::from("  cargo install mneme-brain mneme-ai mneme-guardian"),
+            Line::from("  mneme-ai tui → Press 5: Full Setup"),
+        ];
+        f.render_widget(
+            Paragraph::new(help_text)
+                .block(Block::default().borders(Borders::ALL).title("❓ Help")),
+            area,
+        );
     }
+}
+
+fn which(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }

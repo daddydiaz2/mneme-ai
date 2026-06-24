@@ -5,6 +5,7 @@ pub mod install;
 pub mod mneme;
 pub mod opencode;
 pub mod profile;
+pub mod skills;
 pub mod tui;
 
 use std::path::PathBuf;
