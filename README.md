@@ -93,9 +93,11 @@ cargo install mneme-ai         # 🤖  mneme-ai binary
 cargo install mneme-guardian   # 😇  mneme-g binary
 ```
 
-## Donate
+## Donaciones
 
-☕ [Buy me a coffee](https://www.paypal.com/donate/?hosted_button_id=VDP69Z8GNTAR2)
+¿Te gusta mneme-ai? Invitame un café ☕
+
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue)](https://www.paypal.com/donate/?hosted_button_id=VDP69Z8GNTAR2)
 
 ## License
 
