@@ -48,7 +48,7 @@ pub static SUPPORTED_AGENTS: &[AgentInfo] = &[
     AgentInfo {
         name: "opencode",
         display: "OpenCode",
-        config_path: "{config}/opencode/config.json",
+        config_path: "{config}/opencode/opencode.json",
         config_format: ConfigFormat::Opencode,
         supported: true,
     },

@@ -1,4 +1,5 @@
 use crate::agents::{self, ConfigFormat};
+use crate::opencode;
 use std::path::PathBuf;
 
 const CONFIG_DIR: &str = "mneme-ai";
@@ -79,6 +80,16 @@ pub fn install_agent(agent_name: &str) -> anyhow::Result<()> {
 
     println!("Installing mneme for {}...", agent.display);
     setup_mcp_config(agent)?;
+
+    // For OpenCode: also generate agents and prompt files
+    if agent_name == "opencode" {
+        println!("  Generating mneme-orchestrator agents...");
+        opencode::write_prompt_files()?;
+        let config = opencode::OpenCodeConfig::default();
+        let agents_json = opencode::generate_agents(&config);
+        opencode::write_to_opencode(&agents_json)?;
+    }
+
     println!("✓ {} configured with mneme.", agent.display);
     Ok(())
 }
@@ -133,12 +144,13 @@ fn setup_mcp_config(agent: &agents::AgentInfo) -> anyhow::Result<()> {
             });
         }
         ConfigFormat::Opencode => {
-            config["mcp"] = serde_json::json!({
-                "mneme": {
-                    "command": "mneme",
-                    "args": ["mcp"],
-                    "env": {}
-                }
+            if config.get("mcp").map_or(true, |v| !v.is_object()) {
+                config["mcp"] = serde_json::json!({});
+            }
+            config["mcp"]["mneme"] = serde_json::json!({
+                "command": ["mneme", "mcp"],
+                "type": "local",
+                "enabled": true
             });
         }
         ConfigFormat::Continue => {
