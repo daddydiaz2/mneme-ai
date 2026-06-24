@@ -77,15 +77,25 @@ struct App {
     form_provider: String,
     form_model: String,
     form_step: usize,
-    // Install state
+    // Wizard state
     install_step: usize,
     install_log: Vec<String>,
+    wizard_selected_agent: usize,
+    wizard_agents: Vec<(&'static str, bool)>,
+    wizard_model_provider: String,
+    wizard_model_name: String,
+    wizard_create_profile: bool,
+    wizard_profile_name: String,
 }
 
 impl App {
     fn new(store: ProfileStore) -> Self {
         let profiles = store.list().unwrap_or_default();
         let skill_list = skills::scan_skills();
+        let agents: Vec<(&'static str, bool)> = crate::agents::SUPPORTED_AGENTS.iter()
+            .filter(|a| a.supported)
+            .map(|a| (a.name, false))
+            .collect();
         Self {
             store,
             profiles,
@@ -100,6 +110,12 @@ impl App {
             form_step: 0,
             install_step: 0,
             install_log: Vec::new(),
+            wizard_selected_agent: 0,
+            wizard_agents: agents,
+            wizard_model_provider: "opencode".to_string(),
+            wizard_model_name: "default".to_string(),
+            wizard_create_profile: false,
+            wizard_profile_name: "default".to_string(),
         }
     }
 
@@ -210,47 +226,161 @@ impl App {
     }
 
     fn handle_agent_install(&mut self, key: KeyCode) -> bool {
-        match key {
-            KeyCode::Tab | KeyCode::Enter => {
-                match self.install_step {
-                    0 => { self.install_step = 1; }
-                    1 => {
-                        self.install_log.push("✓ Step 1: OpenCode selected".to_string());
-                        self.install_step = 2;
-                    }
-                    2 => {
-                        self.install_log.push("  Creating mneme-orchestrator...".to_string());
-                        let _ = crate::install::install_agent("opencode");
-                        let _ = crate::install::install_opencode_agents();
-                        self.install_step = 3;
-                    }
-                    3 => {
-                        self.install_log.push("  Installing skills + branding...".to_string());
-                        let _ = skills::install_mneme_skills();
-                        let _ = crate::opencode::customize_opencode();
-                        self.skills_list = skills::scan_skills();
-                        self.install_step = 4;
-                    }
-                    4 => {
-                        self.install_log.push("✅ Setup complete!".to_string());
-                        self.install_step = 5;
-                    }
-                    _ => {}
-                }
-                true
-            }
-            KeyCode::Esc | KeyCode::Backspace => {
-                if self.install_step > 0 && self.install_step < 5 {
-                    self.install_step -= 1;
-                } else {
+        match self.install_step {
+            0 => self.handle_wizard_intro(key),
+            1 => self.handle_wizard_agents(key),
+            2 => self.handle_wizard_model(key),
+            3 => self.handle_wizard_profile(key),
+            4 => self.handle_wizard_execute(key),
+            _ => {
+                if let KeyCode::Esc = key {
                     self.screen = Screen::Welcome; self.tab_index = 0;
                     self.install_step = 0; self.install_log.clear();
                 }
+                key != KeyCode::Char('q')
+            }
+        }
+    }
+
+    fn handle_wizard_intro(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Tab | KeyCode::Enter => self.install_step = 1,
+            KeyCode::Esc => { self.screen = Screen::Welcome; self.tab_index = 0; }
+            KeyCode::Char('q') => return false,
+            _ => {}
+        }
+        true
+    }
+
+    fn handle_wizard_agents(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Up | KeyCode::Char('k') => { self.wizard_selected_agent = self.wizard_selected_agent.saturating_sub(1); }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let max = self.wizard_agents.len().saturating_sub(1);
+                self.wizard_selected_agent = self.wizard_selected_agent.saturating_add(1).min(max);
+            }
+            KeyCode::Char(' ') => {
+                if let Some(a) = self.wizard_agents.get_mut(self.wizard_selected_agent) {
+                    a.1 = !a.1;
+                }
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                let selected: Vec<&str> = self.wizard_agents.iter()
+                    .filter(|a| a.1).map(|a| a.0).collect();
+                if selected.is_empty() {
+                    self.install_log.push("⚠ No agents selected, using opencode".to_string());
+                    if let Some(a) = self.wizard_agents.iter_mut().find(|a| a.0 == "opencode") {
+                        a.1 = true;
+                    }
+                }
+                self.install_step = 2;
+            }
+            KeyCode::Esc => self.install_step = 0,
+            KeyCode::Char('q') => return false,
+            _ => {}
+        }
+        true
+    }
+    fn handle_wizard_model(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Tab | KeyCode::Enter => {
+                if self.wizard_selected_agent < 2 {
+                    self.wizard_selected_agent += 1;
+                } else {
+                    self.install_step = 3;
+                    self.wizard_selected_agent = 0;
+                }
                 true
             }
+            KeyCode::Backspace => {
+                if self.wizard_selected_agent == 0 {
+                    self.wizard_model_provider.pop();
+                } else {
+                    self.wizard_model_name.pop();
+                }
+                true
+            }
+            KeyCode::Char(c) => {
+                if self.wizard_selected_agent == 0 {
+                    self.wizard_model_provider.push(c);
+                } else {
+                    self.wizard_model_name.push(c);
+                }
+                true
+            }
+            KeyCode::Esc => { self.install_step = 1; true }
             KeyCode::Char('q') => false,
             _ => true,
         }
+    }
+
+    fn  handle_wizard_profile(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.wizard_create_profile = true;
+                self.wizard_profile_name = "default".to_string();
+                self.install_step = 4;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.wizard_create_profile = false;
+                self.install_step = 4;
+            }
+            KeyCode::Esc => self.install_step = 2,
+            KeyCode::Char('q') => return false,
+            _ => {}
+        }
+        true
+    }
+
+    fn handle_wizard_execute(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Tab | KeyCode::Enter => {
+                self.install_log.clear();
+                self.install_log.push("🚀 Running setup...".to_string());
+
+                // Install selected agents
+                for (name, selected) in &self.wizard_agents {
+                    if *selected {
+                        self.install_log.push(format!("  Configuring {}...", name));
+                        let _ = crate::install::install_agent(name);
+                        self.install_log.push(format!("✓ {} configured", name));
+                    }
+                }
+
+                // Create orchestrator agents
+                self.install_log.push("  Creating mneme-orchestrator...".to_string());
+                let _ = crate::install::install_opencode_agents();
+
+                // Install skills & branding
+                self.install_log.push("  Installing skills...".to_string());
+                let _ = skills::install_mneme_skills();
+                let _ = crate::opencode::customize_opencode();
+                self.skills_list = skills::scan_skills();
+
+                // Create profile if requested
+                if self.wizard_create_profile {
+                    let profile = crate::profile::SddProfile {
+                        name: self.wizard_profile_name.clone(),
+                        orchestrator: crate::profile::ModelAssignment {
+                            provider: self.wizard_model_provider.clone(),
+                            model: self.wizard_model_name.clone(),
+                            reasoning_effort: None,
+                        },
+                        phases: std::collections::HashMap::new(),
+                    };
+                    let _ = self.store.save(&profile);
+                    self.install_log.push(format!("✓ Profile '{}' created", self.wizard_profile_name));
+                }
+
+                self.install_log.push("✅ Setup complete!".to_string());
+                self.install_step = 5;
+                self.profiles = self.store.list().unwrap_or_default();
+            }
+            KeyCode::Esc => self.install_step = 3,
+            KeyCode::Char('q') => return false,
+            _ => {}
+        }
+        true
     }
 
     fn handle_profiles(&mut self, key: KeyCode) -> bool {
@@ -546,53 +676,85 @@ impl App {
         let chunks = Layout::default().direction(Direction::Vertical)
             .constraints([Constraint::Min(1)]).split(area);
 
-        let wizard_steps = [
-            "Welcome — configure your ecosystem",
-            "Select agent (OpenCode)",
-            "Create mneme-orchestrator agents",
-            "Install skills + branding",
-            "Complete!",
-        ];
-        
-        let mut lines = vec![
-            Line::from(Span::styled("🚀 Ecosystem Setup Wizard", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
-            Line::from(""),
-        ];
+        let mut lines: Vec<Line> = Vec::new();
 
-        // Show wizard steps with current highlights
-        for (i, step) in wizard_steps.iter().enumerate() {
-            let (icon, style) = if i < self.install_step {
-                ("✅", Style::default().fg(Color::Green))
-            } else if i == self.install_step {
-                ("▶ ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-            } else {
-                ("○ ", Style::default().fg(Color::DarkGray))
-            };
-            lines.push(Line::from(Span::styled(format!("  {} {}", icon, step), style)));
-        }
-
+        lines.push(Line::from(Span::styled("🚀 Ecosystem Setup Wizard  (Tab/Enter: Next  |  Esc: Back)", 
+            Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))));
         lines.push(Line::from(""));
-        
-        // Show install log
-        for log_line in &self.install_log {
-            let style = if log_line.starts_with("✓") || log_line.starts_with("✅") {
-                Style::default().fg(Color::Green)
-            } else if log_line.starts_with("✗") {
-                Style::default().fg(Color::Red)
-            } else if log_line.starts_with("🚀") {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            lines.push(Line::from(Span::styled(log_line.clone(), style)));
-        }
 
-        // Bottom controls
-        lines.push(Line::from(""));
-        if self.install_step < 5 {
-            lines.push(Line::from(Span::styled("  Tab/Enter: Next step  |  Esc: Back  |  q: Quit", Style::default().fg(Color::DarkGray))));
-        } else {
-            lines.push(Line::from(Span::styled("  Esc: Back to Welcome  |  q: Quit", Style::default().fg(Color::DarkGray))));
+        match self.install_step {
+            0 => {
+                lines.push(Line::from(Span::styled("Welcome to the mneme ecosystem setup!", Style::default().add_modifier(Modifier::BOLD))));
+                lines.push(Line::from(""));
+                lines.push(Line::from("This wizard will:"));
+                lines.push(Line::from("  1. Select which AI agents to configure"));
+                lines.push(Line::from("  2. Choose model settings (provider + model)"));
+                lines.push(Line::from("  3. Optionally create an SDD profile"));
+                lines.push(Line::from("  4. Install everything"));
+                lines.push(Line::from(""));
+                lines.push(Line::from("Press Tab or Enter to begin."));
+            }
+            1 => {
+                lines.push(Line::from(Span::styled("Step 1: Select agents to configure", Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow))));
+                lines.push(Line::from("Use ↑↓ to navigate, Space to toggle, Tab to continue"));
+                lines.push(Line::from(""));
+                for (i, (name, selected)) in self.wizard_agents.iter().enumerate() {
+                    let prefix = if i == self.wizard_selected_agent { "→" } else { " " };
+                    let check = if *selected { "✓" } else { " " };
+                    lines.push(Line::from(format!(" {} [{}] {}", prefix, check, name)));
+                }
+            }
+            2 => {
+                lines.push(Line::from(Span::styled("Step 2: Model settings", Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow))));
+                lines.push(Line::from("Enter provider and model. Tab to switch fields, Enter to continue."));
+                lines.push(Line::from(""));
+                let prov_cursor = if self.wizard_selected_agent % 2 == 0 && self.wizard_selected_agent < 2 { "◄" } else { "✓" };
+                let model_cursor = if self.wizard_selected_agent % 2 == 1 || self.wizard_selected_agent >= 2 { "◄" } else { "✓" };
+                lines.push(Line::from(format!("  Provider [default: opencode]: {} {}", self.wizard_model_provider, prov_cursor)));
+                lines.push(Line::from(format!("  Model [default: default]: {} {}", self.wizard_model_name, model_cursor)));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled("  Examples: opencode/deepseek-v4-flash, anthropic/claude-sonnet-4", Style::default().fg(Color::DarkGray))));
+            }
+            3 => {
+                lines.push(Line::from(Span::styled("Step 3: Create SDD profile?", Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow))));
+                lines.push(Line::from(""));
+                lines.push(Line::from("  An SDD profile defines the model used for each SDD phase."));
+                lines.push(Line::from("  Without one, the default orchestrator model is used."));
+                lines.push(Line::from(""));
+                lines.push(Line::from("  Press Y to create a profile, N to skip."));
+            }
+            4 => {
+                lines.push(Line::from(Span::styled("Step 4: Execute Setup", Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow))));
+                lines.push(Line::from("Press Tab/Enter to run the configuration."));
+                lines.push(Line::from(""));
+                for log_line in &self.install_log {
+                    let style = if log_line.starts_with("✓") || log_line.starts_with("✅") {
+                        Style::default().fg(Color::Green)
+                    } else if log_line.starts_with("✗") {
+                        Style::default().fg(Color::Red)
+                    } else if log_line.starts_with("🚀") {
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    lines.push(Line::from(Span::styled(log_line.clone(), style)));
+                }
+            }
+            5 => {
+                lines.push(Line::from(Span::styled("✅ Setup Complete!", Style::default().add_modifier(Modifier::BOLD).fg(Color::Green))));
+                lines.push(Line::from(""));
+                for log_line in &self.install_log {
+                    let style = if log_line.starts_with("✅") {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    lines.push(Line::from(Span::styled(log_line.clone(), style)));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled("Press Esc to return to welcome screen.", Style::default().fg(Color::DarkGray))));
+            }
+            _ => {}
         }
 
         f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("💻 Install")), chunks[0]);
