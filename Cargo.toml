@@ -26,6 +26,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "5"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+ratatui = { version = "0.27", features = ["all-widgets"] }
+crossterm = { version = "0.27", features = ["event-stream"] }
 reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
 
 [dev-dependencies]

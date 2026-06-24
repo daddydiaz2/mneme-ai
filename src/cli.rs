@@ -1,9 +1,6 @@
 use clap::{Parser, Subcommand};
 
 /// mneme-ai — Ecosystem configurator for AI coding agents.
-///
-/// Supercharges your AI agent with mneme persistent memory, SDD workflows,
-/// curated skills, and MCP tools — regardless of which agent you use.
 #[derive(Parser)]
 #[command(name = "mneme-ai", version, about, long_about = None)]
 pub struct Cli {
@@ -31,15 +28,13 @@ pub enum Commands {
     /// Run ecosystem health checks.
     Doctor,
 
-    /// Sync configuration profiles.
-    Sync {
-        /// Profile name (e.g. "cheap", "premium").
-        #[arg(long)]
-        profile: Option<String>,
+    /// Launch interactive TUI.
+    Tui,
 
-        /// Per-phase model override (e.g. "cheap:sdd-design:model-x").
-        #[arg(long)]
-        profile_phase: Option<String>,
+    /// Manage SDD profiles.
+    Profile {
+        #[command(subcommand)]
+        profile_cmd: ProfileCommands,
     },
 
     /// List all supported agents.
@@ -47,4 +42,31 @@ pub enum Commands {
 
     /// Show version.
     Version,
+}
+
+#[derive(Subcommand)]
+pub enum ProfileCommands {
+    /// List all SDD profiles.
+    List,
+
+    /// Create a new SDD profile.
+    Create {
+        /// Profile name.
+        name: String,
+        /// Provider/model string (e.g. opencode/default).
+        #[arg(short = 'm')]
+        model: Option<String>,
+    },
+
+    /// Show profile details.
+    Show {
+        /// Profile name.
+        name: String,
+    },
+
+    /// Delete a profile.
+    Delete {
+        /// Profile name.
+        name: String,
+    },
 }

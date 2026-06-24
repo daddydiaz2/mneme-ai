@@ -3,3 +3,5 @@ pub mod cli;
 pub mod doctor;
 pub mod install;
 pub mod mneme;
+pub mod profile;
+pub mod tui;
