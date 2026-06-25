@@ -173,21 +173,77 @@ impl Wizard {
                 KeyCode::Char('q') => return false,
                 _ => {}
             },
-            2 => match k {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.sel_provider = self.sel_provider.saturating_sub(1)
+            2 => {
+                if self.sel_effort == 0 {
+                    // Provider selection
+                    match k {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.sel_provider = self.sel_provider.saturating_sub(1)
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.sel_provider =
+                                self.sel_provider.saturating_add(1).min(PROVIDERS.len() - 1)
+                        }
+                        KeyCode::Enter => {
+                            self.sel_effort = 1;
+                            self.sel_model = 0;
+                        }
+                        KeyCode::Esc => self.step = 1,
+                        KeyCode::Char('q') => return false,
+                        _ => {}
+                    }
+                } else if self.sel_effort == 1 {
+                    // Model selection
+                    let provider = PROVIDERS[self.sel_provider];
+                    let models_opt = MODELS.iter().find(|(n, _)| *n == provider);
+                    let mcount = models_opt.map(|(_, m)| m.len()).unwrap_or(0);
+                    match k {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.sel_model = self.sel_model.saturating_sub(1)
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.sel_model = self
+                                .sel_model
+                                .saturating_add(1)
+                                .min(mcount.saturating_sub(1))
+                        }
+                        KeyCode::Enter => {
+                            if let Some(models) = models_opt {
+                                if !models.1.is_empty() && self.sel_model < models.1.len() {
+                                    self.profiles[0].provider = PROVIDERS[self.sel_provider].into();
+                                    self.profiles[0].model = models.1[self.sel_model].into();
+                                }
+                            }
+                            self.sel_effort = 2;
+                        }
+                        KeyCode::Esc => self.sel_effort = 0,
+                        KeyCode::Char('q') => return false,
+                        _ => {}
+                    }
+                } else {
+                    // Reasoning effort
+                    match k {
+                        KeyCode::Char('1') => {
+                            self.profiles[0].effort = 1;
+                            self.step = if self.create_profile { 3 } else { 4 };
+                        }
+                        KeyCode::Char('2') => {
+                            self.profiles[0].effort = 2;
+                            self.step = if self.create_profile { 3 } else { 4 };
+                        }
+                        KeyCode::Char('3') => {
+                            self.profiles[0].effort = 3;
+                            self.step = if self.create_profile { 3 } else { 4 };
+                        }
+                        KeyCode::Enter => {
+                            self.step = if self.create_profile { 3 } else { 4 };
+                        }
+                        KeyCode::Esc => self.sel_effort = 1,
+                        KeyCode::Char('q') => return false,
+                        _ => {}
+                    }
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.sel_provider = self.sel_provider.saturating_add(1).min(PROVIDERS.len() - 1)
-                }
-                KeyCode::Enter => {
-                    self.customizing_phase = false;
-                    self.step = if self.create_profile { 3 } else { 4 };
-                }
-                KeyCode::Esc => self.step = 1,
-                KeyCode::Char('q') => return false,
-                _ => {}
-            },
+            }
             3 => match k {
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.phase_sel = self.phase_sel.saturating_sub(1)
@@ -382,39 +438,93 @@ impl Wizard {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(3)])
             .split(a);
-        let items: Vec<ListItem> = PROVIDERS
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let st = if i == self.sel_provider {
-                    Style::default().bg(Color::Blue).fg(Color::White)
-                } else {
-                    Style::default()
-                };
-                let models = MODELS
-                    .iter()
-                    .find(|(n, _)| n == p)
-                    .map(|(_, m)| m.join(", "))
-                    .unwrap_or_default();
-                ListItem::new(format!(" {}  — models: {}", p, models)).style(st)
-            })
-            .collect();
-        f.render_widget(
-            List::new(items).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("⚙ Select Provider (Enter: confirm)"),
-            ),
-            c[0],
-        );
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                "↑↓: Choose provider  Enter: Next  Esc: Back",
-                Style::default().fg(Color::DarkGray),
-            ))
-            .block(Block::default().borders(Borders::ALL)),
-            c[1],
-        );
+        let title = match self.sel_effort {
+            0 => "⚙ Select Provider",
+            1 => "🔧 Select Model",
+            _ => "🎯 Reasoning Effort (1: low 2: medium 3: high, Enter: default)",
+        };
+        if self.sel_effort == 0 {
+            let items: Vec<ListItem> = PROVIDERS
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let st = if i == self.sel_provider {
+                        Style::default().bg(Color::Blue).fg(Color::White)
+                    } else {
+                        Style::default()
+                    };
+                    let models = MODELS
+                        .iter()
+                        .find(|(n, _)| n == p)
+                        .map(|(_, m)| m.join(", "))
+                        .unwrap_or_default();
+                    ListItem::new(format!(" {}  — models: {}", p, models)).style(st)
+                })
+                .collect();
+            f.render_widget(
+                List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
+                c[0],
+            );
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "↑↓: Choose provider  Enter: Next  Esc: Back",
+                    Style::default().fg(Color::DarkGray),
+                ))
+                .block(Block::default().borders(Borders::ALL)),
+                c[1],
+            );
+        } else if self.sel_effort == 1 {
+            let provider = PROVIDERS[self.sel_provider];
+            let model_list: Vec<&str> = MODELS
+                .iter()
+                .find(|(n, _)| *n == provider)
+                .map(|(_, m)| m.to_vec())
+                .unwrap_or_default();
+            let models = model_list;
+            let items: Vec<ListItem> = models
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let st = if i == self.sel_model {
+                        Style::default().bg(Color::Blue).fg(Color::White)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(format!(" {}", m)).style(st)
+                })
+                .collect();
+            f.render_widget(
+                List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
+                c[0],
+            );
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "↑↓: Choose model  Enter: Confirm  Esc: Back",
+                    Style::default().fg(Color::DarkGray),
+                ))
+                .block(Block::default().borders(Borders::ALL)),
+                c[1],
+            );
+        } else {
+            let effort_items = vec![
+                ListItem::new(" 1: Low (fast, cheaper)"),
+                ListItem::new(" 2: Medium (balanced)"),
+                ListItem::new(" 3: High (best quality)"),
+                ListItem::new(" Enter: Default (provider default)"),
+            ];
+            f.render_widget(
+                List::new(effort_items).block(Block::default().borders(Borders::ALL).title(title)),
+                c[0],
+            );
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "1-3: Select effort  Enter: Default  Esc: Back",
+                    Style::default().fg(Color::DarkGray),
+                ))
+                .block(Block::default().borders(Borders::ALL)),
+                c[1],
+            );
+        }
     }
     fn pick_phases(&self, f: &mut Frame, a: Rect) {
         let c = Layout::default()
