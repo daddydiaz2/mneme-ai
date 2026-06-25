@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Install {
             agent,
             with_agents,
-            agents_only,
+            agents_only: _,
         } => {
             if agent == "all" {
                 for a in agents::SUPPORTED_AGENTS {
@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
             MemoryCommands::Search { query, project } => {
                 mneme_ai::mneme::search(&query, project.as_deref())?;
             }
-            MemoryCommands::List { project, limit } => {
+            MemoryCommands::List { project, limit: _ } => {
                 let project = project.unwrap_or_else(|| "default".to_string());
                 println!("ℹ List memories via: mneme list --project {}", project);
             }
@@ -269,7 +269,7 @@ fn handle_profile(cmd: ProfileCommands) -> anyhow::Result<()> {
             println!("✓ Profile '{}' deleted.", name);
         }
         ProfileCommands::Export { name } => {
-            let profile = store
+            let _profile = store
                 .get(&name)?
                 .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found.", name))?;
             let config = mneme_ai::opencode::OpenCodeConfig::default();
