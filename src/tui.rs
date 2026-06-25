@@ -1,4 +1,4 @@
-//! Complete wizard TUI for mneme-ai — gentle-ai style but better.
+//! Complete wizard TUI for mneme-ai — gentle-ai style with per-phase config.
 use crate::mneme;
 use crate::profile::{ModelAssignment, ProfileStore, SddProfile, SDD_PHASES};
 use crate::skills;
@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Tabs},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
     Frame, Terminal,
 };
 use std::io;
@@ -48,7 +48,16 @@ const MODELS: &[(&str, &[&str])] = &[
     ),
     ("github", &["gpt-5-mini", "claude-sonnet-4"]),
 ];
-const REASONING_EFFORTS: &[&str] = &["default", "low", "medium", "high"];
+const EFFORTS: &[&str] = &["default", "low", "medium", "high", "xhigh"];
+
+fn models_for_provider(provider: &str) -> Vec<&'static str> {
+    for (p, models) in MODELS {
+        if *p == provider {
+            return models.to_vec();
+        }
+    }
+    vec![]
+}
 
 pub fn run_tui() -> anyhow::Result<()> {
     enable_raw_mode()?;
@@ -59,37 +68,31 @@ pub fn run_tui() -> anyhow::Result<()> {
     let store = ProfileStore::new();
     let _ = store.init();
     let _ = skills::install_mneme_skills();
-    let mut a = Wizard::new(store);
-    let r = a.run(&mut t);
+    let mut w = Wizard::new(store);
+    let r = w.run(&mut t);
     disable_raw_mode()?;
     execute!(t.backend_mut(), LeaveAlternateScreen)?;
     t.show_cursor()?;
     r
 }
 
-struct Profile {
-    project: String,
-    provider: String,
-    model: String,
-    effort: usize,
-    phases: Vec<(String, String, String, usize)>, // name, provider, model, effort
-}
-
 struct Wizard {
     store: ProfileStore,
     step: usize,
-    profiles: Vec<Profile>,
-    skills: Vec<skills::Skill>,
     logs: Vec<String>,
-    sel_agent: usize,
     agents: Vec<(&'static str, bool)>,
+    sel_agent: usize,
+    provider: String,
+    model: String,
+    effort: String,
     sel_provider: usize,
     sel_model: usize,
     sel_effort: usize,
-    create_profile: bool,
-    profile_name: String,
+    phase_models: Vec<(String, String, String)>, // phase, provider, model
     phase_sel: usize,
-    customizing_phase: bool,
+    edit_phase: bool,
+    profiles: Vec<skills::Skill>,
+    create_profile: bool,
 }
 
 impl Wizard {
@@ -99,27 +102,27 @@ impl Wizard {
             .filter(|a| a.supported)
             .map(|a| (a.name, false))
             .collect();
+        let phase_models: Vec<_> = SDD_PHASES
+            .iter()
+            .map(|p| (p.to_string(), "opencode".to_string(), "default".to_string()))
+            .collect();
         Self {
             store,
             step: 0,
-            profiles: vec![Profile {
-                project: "default".into(),
-                provider: "opencode".into(),
-                model: "deepseek-v4-flash".into(),
-                effort: 0,
-                phases: vec![],
-            }],
-            skills: skills::scan_skills(),
             logs: vec![],
-            sel_agent: 0,
             agents,
+            sel_agent: 0,
+            provider: "opencode".into(),
+            model: "deepseek-v4-flash".into(),
+            effort: "default".into(),
             sel_provider: 0,
             sel_model: 0,
             sel_effort: 0,
-            create_profile: false,
-            profile_name: "default".into(),
+            phase_models,
             phase_sel: 0,
-            customizing_phase: false,
+            edit_phase: false,
+            profiles: skills::scan_skills(),
+            create_profile: true,
         }
     }
     fn run(&mut self, t: &mut Term) -> anyhow::Result<()> {
@@ -134,146 +137,180 @@ impl Wizard {
         Ok(())
     }
     fn key(&mut self, k: KeyCode) -> bool {
-        let step = self.step;
-        match step {
+        match self.step {
             0 => match k {
                 KeyCode::Char('1') => self.step = 1,
                 KeyCode::Char('2') => {
                     self.step = 5;
-                    self.run_all();
+                    self.execute();
                 }
                 KeyCode::Char('q') | KeyCode::Esc => return false,
                 _ => {}
             },
-            1 => match k {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.sel_agent = self.sel_agent.saturating_sub(1)
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.sel_agent = self.sel_agent.saturating_add(1).min(self.agents.len() - 1)
-                }
-                KeyCode::Char(' ') => {
-                    if let Some(a) = self.agents.get_mut(self.sel_agent) {
-                        a.1 = !a.1;
-                    }
-                }
-                KeyCode::Char('a') => {
-                    let all = self.agents.iter().any(|a| !a.1);
-                    for a in &mut self.agents {
-                        a.1 = all;
-                    }
-                }
-                KeyCode::Tab | KeyCode::Enter => {
-                    if !self.agents.iter().any(|a| a.1) {
-                        self.agents[0].1 = true;
-                    }
-                    self.step = 2;
-                }
-                KeyCode::Esc => self.step = 0,
-                KeyCode::Char('q') => return false,
-                _ => {}
-            },
-            2 => {
-                if self.sel_effort == 0 {
-                    // Provider selection
-                    match k {
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            self.sel_provider = self.sel_provider.saturating_sub(1)
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            self.sel_provider =
-                                self.sel_provider.saturating_add(1).min(PROVIDERS.len() - 1)
-                        }
-                        KeyCode::Enter => {
-                            self.sel_effort = 1;
-                            self.sel_model = 0;
-                        }
-                        KeyCode::Esc => self.step = 1,
-                        KeyCode::Char('q') => return false,
-                        _ => {}
-                    }
-                } else if self.sel_effort == 1 {
-                    // Model selection
-                    let provider = PROVIDERS[self.sel_provider];
-                    let models_opt = MODELS.iter().find(|(n, _)| *n == provider);
-                    let mcount = models_opt.map(|(_, m)| m.len()).unwrap_or(0);
-                    match k {
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            self.sel_model = self.sel_model.saturating_sub(1)
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            self.sel_model = self
-                                .sel_model
-                                .saturating_add(1)
-                                .min(mcount.saturating_sub(1))
-                        }
-                        KeyCode::Enter => {
-                            if let Some(models) = models_opt {
-                                if !models.1.is_empty() && self.sel_model < models.1.len() {
-                                    self.profiles[0].provider = PROVIDERS[self.sel_provider].into();
-                                    self.profiles[0].model = models.1[self.sel_model].into();
-                                }
-                            }
-                            self.sel_effort = 2;
-                        }
-                        KeyCode::Esc => self.sel_effort = 0,
-                        KeyCode::Char('q') => return false,
-                        _ => {}
-                    }
-                } else {
-                    // Reasoning effort
-                    match k {
-                        KeyCode::Char('1') => {
-                            self.profiles[0].effort = 1;
-                            self.step = if self.create_profile { 3 } else { 4 };
-                        }
-                        KeyCode::Char('2') => {
-                            self.profiles[0].effort = 2;
-                            self.step = if self.create_profile { 3 } else { 4 };
-                        }
-                        KeyCode::Char('3') => {
-                            self.profiles[0].effort = 3;
-                            self.step = if self.create_profile { 3 } else { 4 };
-                        }
-                        KeyCode::Enter => {
-                            self.step = if self.create_profile { 3 } else { 4 };
-                        }
-                        KeyCode::Esc => self.sel_effort = 1,
-                        KeyCode::Char('q') => return false,
-                        _ => {}
-                    }
+            1 => self.key_agents(k),
+            2 => self.key_model(k),
+            3 => self.key_phases(k),
+            4 => {
+                if k == KeyCode::Tab || k == KeyCode::Enter {
+                    self.execute();
+                } else if k == KeyCode::Esc {
+                    self.step = 3;
+                } else if k == KeyCode::Char('q') {
+                    return false;
                 }
             }
-            3 => match k {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.phase_sel = self.phase_sel.saturating_sub(1)
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.phase_sel = self.phase_sel.saturating_add(1).min(SDD_PHASES.len())
-                }
-                KeyCode::Tab | KeyCode::Enter => {
-                    self.step = 4;
-                }
-                KeyCode::Esc => self.step = 2,
-                KeyCode::Char('q') => return false,
-                _ => {}
-            },
-            4 => match k {
-                KeyCode::Tab | KeyCode::Enter => self.run_all(),
-                KeyCode::Esc => self.step = if self.create_profile { 3 } else { 2 },
-                KeyCode::Char('q') => return false,
-                _ => {}
-            },
             5 => {
                 if k == KeyCode::Esc || k == KeyCode::Char('q') {
                     return false;
                 }
             }
             _ => {}
-        };
+        }
         true
     }
-    fn run_all(&mut self) {
+    fn key_agents(&mut self, k: KeyCode) {
+        match k {
+            KeyCode::Up | KeyCode::Char('k') => self.sel_agent = self.sel_agent.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.sel_agent = self.sel_agent.saturating_add(1).min(self.agents.len() - 1)
+            }
+            KeyCode::Char(' ') => {
+                if let Some(a) = self.agents.get_mut(self.sel_agent) {
+                    a.1 = !a.1;
+                }
+            }
+            KeyCode::Char('a') => {
+                let all = self.agents.iter().any(|a| !a.1);
+                for a in &mut self.agents {
+                    a.1 = all;
+                }
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                if !self.agents.iter().any(|a| a.1) {
+                    self.agents[0].1 = true;
+                }
+                self.step = 2;
+            }
+            KeyCode::Esc => self.step = 0,
+            _ => {}
+        }
+    }
+    fn key_model(&mut self, k: KeyCode) {
+        match self.sel_effort {
+            0 => match k {
+                // Provider selection
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.sel_provider = self.sel_provider.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.sel_provider = self.sel_provider.saturating_add(1).min(PROVIDERS.len() - 1)
+                }
+                KeyCode::Enter => {
+                    self.sel_effort = 1;
+                    self.sel_model = 0;
+                }
+                KeyCode::Esc => self.step = 1,
+                _ => {}
+            },
+            1 => match k {
+                // Model selection
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.sel_model = self.sel_model.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.sel_model = self.sel_model.saturating_add(1)
+                }
+                KeyCode::Enter => {
+                    self.provider = PROVIDERS[self.sel_provider].into();
+                    let models = models_for_provider(&self.provider);
+                    if self.sel_model < models.len() {
+                        self.model = models[self.sel_model].to_string();
+                    }
+                    self.sel_effort = 2;
+                    self.sel_model = 0;
+                }
+                KeyCode::Esc => self.sel_effort = 0,
+                _ => {}
+            },
+            _ => match k {
+                // Effort selection
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.sel_model = self.sel_model.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.sel_model = self.sel_model.saturating_add(1).min(EFFORTS.len() - 1)
+                }
+                KeyCode::Enter => {
+                    self.effort = EFFORTS[self.sel_model].into();
+                    self.sel_model = 0;
+                    self.sel_effort = 0;
+                    // Apply to all phases
+                    for p in &mut self.phase_models {
+                        p.1 = self.provider.clone();
+                        p.2 = self.model.clone();
+                    }
+                    self.step = 3;
+                }
+                KeyCode::Esc => self.sel_effort = 1,
+                _ => {}
+            },
+        }
+    }
+    fn key_phases(&mut self, k: KeyCode) {
+        if self.edit_phase {
+            // Editing a specific phase's model
+            match k {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.sel_provider = self.sel_provider.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.sel_provider = self.sel_provider.saturating_add(1).min(PROVIDERS.len() - 1)
+                }
+                KeyCode::Enter => {
+                    let phase = &mut self.phase_models[self.phase_sel];
+                    phase.1 = PROVIDERS[self.sel_provider].into();
+                    let models = models_for_provider(&phase.1);
+                    if self.sel_model < models.len() {
+                        phase.2 = models[self.sel_model].to_string();
+                    }
+                    self.edit_phase = false;
+                    self.sel_provider = 0;
+                    self.sel_model = 0;
+                }
+                KeyCode::Esc => self.edit_phase = false,
+                _ => {}
+            }
+        } else {
+            match k {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.phase_sel = self.phase_sel.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.phase_sel = self.phase_sel.saturating_add(1).min(SDD_PHASES.len() - 1)
+                }
+                KeyCode::Enter => {
+                    // Enter edit mode for this phase
+                    self.edit_phase = true;
+                    self.sel_provider = 0;
+                    self.sel_model = 0;
+                    let p = &self.phase_models[self.phase_sel];
+                    // Try to find provider index
+                    for (i, prov) in PROVIDERS.iter().enumerate() {
+                        if prov == &p.1 {
+                            self.sel_provider = i;
+                            break;
+                        }
+                    }
+                }
+                KeyCode::Tab | KeyCode::Enter if self.phase_sel == SDD_PHASES.len() - 1 => {
+                    self.step = 4
+                }
+                KeyCode::Esc => self.step = 2,
+                _ => {}
+            }
+        }
+    }
+    fn execute(&mut self) {
         self.logs.clear();
         self.logs.push("🚀 Running setup...".into());
         for (name, sel) in &self.agents {
@@ -285,35 +322,31 @@ impl Wizard {
         }
         self.logs.push("  Creating orchestrator agents...".into());
         let _ = crate::install::install_opencode_agents();
-        self.logs.push("  Installing skills & branding...".into());
         let _ = skills::install_mneme_skills();
         let _ = crate::opencode::customize_opencode();
-        self.skills = skills::scan_skills();
-        if self.create_profile {
-            let p = &self.profiles[0];
-            let mut phases = std::collections::HashMap::new();
-            for (n, prov, mdl, _) in &p.phases {
-                phases.insert(
-                    n.clone(),
-                    ModelAssignment {
-                        provider: prov.clone(),
-                        model: mdl.clone(),
-                        reasoning_effort: Some(REASONING_EFFORTS[p.effort].into()),
-                    },
-                );
-            }
-            let _ = self.store.save(&SddProfile {
-                name: self.profile_name.clone(),
-                orchestrator: ModelAssignment {
-                    provider: p.provider.clone(),
-                    model: p.model.clone(),
-                    reasoning_effort: Some(REASONING_EFFORTS[p.effort].into()),
+        self.profiles = skills::scan_skills();
+        // Save profile
+        let mut phases = std::collections::HashMap::new();
+        for (n, prov, mdl) in &self.phase_models {
+            phases.insert(
+                n.clone(),
+                ModelAssignment {
+                    provider: prov.clone(),
+                    model: mdl.clone(),
+                    reasoning_effort: Some(self.effort.clone()),
                 },
-                phases,
-            });
-            self.logs
-                .push(format!("✓ Profile '{}' created", self.profile_name));
+            );
         }
+        let _ = self.store.save(&SddProfile {
+            name: "default".into(),
+            orchestrator: ModelAssignment {
+                provider: self.provider.clone(),
+                model: self.model.clone(),
+                reasoning_effort: Some(self.effort.clone()),
+            },
+            phases,
+        });
+        self.logs.push("✓ Profile saved".into());
         self.logs.push("✅ Setup complete!".into());
         self.step = 5;
     }
@@ -323,7 +356,7 @@ impl Wizard {
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(1)])
             .split(area);
-        let tabs = [
+        let tab_names = [
             "🏠 Welcome",
             "💻 Agents",
             "⚙ Model",
@@ -331,27 +364,27 @@ impl Wizard {
             "▶ Execute",
             "✅ Done",
         ];
-        let t = Tabs::new(tabs.to_vec())
-            .select(self.step)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("mneme-ai Wizard"),
-            )
-            .style(Style::default().fg(Color::White))
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            );
-        f.render_widget(t, h[0]);
+        let step_display = format!(
+            "mneme-ai Wizard  |  [{}] {}",
+            self.step + 1,
+            tab_names.get(self.step).unwrap_or(&"?")
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                &step_display,
+                Style::default().fg(Color::White),
+            ))
+            .block(Block::default().borders(Borders::ALL).title("🧠 mneme-ai"))
+            .style(Style::default().bg(Color::Rgb(22, 27, 34))),
+            h[0],
+        );
         match self.step {
             0 => self.welcome(f, h[1]),
-            1 => self.pick_agents(f, h[1]),
-            2 => self.pick_model(f, h[1]),
-            3 => self.pick_phases(f, h[1]),
-            4 => self.review(f, h[1]),
-            5 => self.done(f, h[1]),
+            1 => self.agents_screen(f, h[1]),
+            2 => self.model_screen(f, h[1]),
+            3 => self.phases_screen(f, h[1]),
+            4 => self.execute_screen(f, h[1]),
+            5 => self.done_screen(f, h[1]),
             _ => {}
         }
     }
@@ -375,8 +408,7 @@ impl Wizard {
                     "SDD Profiles: {}",
                     self.store.list().unwrap_or_default().len()
                 )),
-                Line::from(format!("Skills: {}", self.skills.len())),
-                Line::from(format!("Agents: {}", self.agents.len())),
+                Line::from(format!("Skills: {} installed", self.profiles.len())),
             ])
             .block(Block::default().borders(Borders::ALL).title("📊 Status")),
             c[0],
@@ -388,17 +420,16 @@ impl Wizard {
                     Style::default().fg(Color::Cyan),
                 )),
                 Line::from(Span::styled(
-                    "2: Quick Setup (all default)",
+                    "2: Quick Setup",
                     Style::default().fg(Color::Cyan),
                 )),
-                Line::from(""),
                 Line::from(Span::styled("q: Quit", Style::default().fg(Color::Red))),
             ])
             .block(Block::default().borders(Borders::ALL).title("⚡ Actions")),
             c[1],
         );
     }
-    fn pick_agents(&self, f: &mut Frame, a: Rect) {
+    fn agents_screen(&self, f: &mut Frame, a: Rect) {
         let c = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(3)])
@@ -408,192 +439,203 @@ impl Wizard {
             .iter()
             .enumerate()
             .map(|(i, (n, s))| {
-                let st = if i == self.sel_agent {
-                    Style::default().bg(Color::Blue).fg(Color::White)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(format!(" [{}] {}", if *s { "✓" } else { " " }, n)).style(st)
+                ListItem::new(format!(" [{}] {}", if *s { "✓" } else { " " }, n)).style(
+                    if i == self.sel_agent {
+                        Style::default().bg(Color::Blue).fg(Color::White)
+                    } else {
+                        Style::default()
+                    },
+                )
             })
             .collect();
         f.render_widget(
             List::new(items).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("💻 Select Agents (Space: toggle, a: all, Tab: next)"),
+                    .title("💻 Select Agents (Space: toggle  a: all)"),
             ),
             c[0],
         );
         f.render_widget(
-            Paragraph::new(Span::styled(
-                "↑↓: Navigate  Space: Select  a: All/None  Tab: Continue  Esc: Back",
-                Style::default().fg(Color::DarkGray),
-            ))
-            .block(Block::default().borders(Borders::ALL)),
+            Paragraph::new("↑↓ Navigate  Space Select  a All/None  Tab Continue")
+                .block(Block::default().borders(Borders::ALL)),
             c[1],
         );
     }
-    fn pick_model(&self, f: &mut Frame, a: Rect) {
+    fn model_screen(&self, f: &mut Frame, a: Rect) {
         let c = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(3)])
             .split(a);
-        let title = match self.sel_effort {
-            0 => "⚙ Select Provider",
-            1 => "🔧 Select Model",
-            _ => "🎯 Reasoning Effort (1: low 2: medium 3: high, Enter: default)",
-        };
         if self.sel_effort == 0 {
             let items: Vec<ListItem> = PROVIDERS
                 .iter()
                 .enumerate()
                 .map(|(i, p)| {
-                    let st = if i == self.sel_provider {
+                    ListItem::new(format!(" {}", p)).style(if i == self.sel_provider {
                         Style::default().bg(Color::Blue).fg(Color::White)
                     } else {
                         Style::default()
-                    };
-                    let models = MODELS
-                        .iter()
-                        .find(|(n, _)| n == p)
-                        .map(|(_, m)| m.join(", "))
-                        .unwrap_or_default();
-                    ListItem::new(format!(" {}  — models: {}", p, models)).style(st)
+                    })
                 })
                 .collect();
             f.render_widget(
-                List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
+                List::new(items).block(Block::default().borders(Borders::ALL).title("⚙ Provider")),
                 c[0],
             );
             f.render_widget(
-                Paragraph::new(Span::styled(
-                    "↑↓: Choose provider  Enter: Next  Esc: Back",
-                    Style::default().fg(Color::DarkGray),
-                ))
-                .block(Block::default().borders(Borders::ALL)),
+                Paragraph::new("↑↓ Choose  Enter Next")
+                    .block(Block::default().borders(Borders::ALL)),
                 c[1],
             );
         } else if self.sel_effort == 1 {
-            let provider = PROVIDERS[self.sel_provider];
-            let model_list: Vec<&str> = MODELS
-                .iter()
-                .find(|(n, _)| *n == provider)
-                .map(|(_, m)| m.to_vec())
-                .unwrap_or_default();
-            let models = model_list;
+            let models = models_for_provider(PROVIDERS[self.sel_provider]);
             let items: Vec<ListItem> = models
                 .iter()
                 .enumerate()
                 .map(|(i, m)| {
-                    let st = if i == self.sel_model {
+                    ListItem::new(format!(" {}", m)).style(if i == self.sel_model {
                         Style::default().bg(Color::Blue).fg(Color::White)
                     } else {
                         Style::default()
-                    };
-                    ListItem::new(format!(" {}", m)).style(st)
+                    })
                 })
                 .collect();
             f.render_widget(
-                List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
+                List::new(items).block(Block::default().borders(Borders::ALL).title("🔧 Model")),
                 c[0],
             );
             f.render_widget(
-                Paragraph::new(Span::styled(
-                    "↑↓: Choose model  Enter: Confirm  Esc: Back",
-                    Style::default().fg(Color::DarkGray),
-                ))
-                .block(Block::default().borders(Borders::ALL)),
+                Paragraph::new("↑↓ Choose  Enter Next")
+                    .block(Block::default().borders(Borders::ALL)),
                 c[1],
             );
         } else {
-            let effort_items = vec![
-                ListItem::new(" 1: Low (fast, cheaper)"),
-                ListItem::new(" 2: Medium (balanced)"),
-                ListItem::new(" 3: High (best quality)"),
-                ListItem::new(" Enter: Default (provider default)"),
-            ];
+            let items: Vec<ListItem> = EFFORTS
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    let note = match *e {
+                        "low" => " (fast, cheap)",
+                        "medium" => " (balanced)",
+                        "high" => " (quality)",
+                        "xhigh" => " (max reasoning)",
+                        _ => "",
+                    };
+                    ListItem::new(format!(" {}{}", e, note)).style(if i == self.sel_model {
+                        Style::default().bg(Color::Blue).fg(Color::White)
+                    } else {
+                        Style::default()
+                    })
+                })
+                .collect();
             f.render_widget(
-                List::new(effort_items).block(Block::default().borders(Borders::ALL).title(title)),
+                List::new(items).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("🎯 Reasoning Effort"),
+                ),
                 c[0],
             );
             f.render_widget(
-                Paragraph::new(Span::styled(
-                    "1-3: Select effort  Enter: Default  Esc: Back",
-                    Style::default().fg(Color::DarkGray),
-                ))
+                Paragraph::new("↑↓ Choose  Enter Confirm  Set for ALL phases")
+                    .block(Block::default().borders(Borders::ALL)),
+                c[1],
+            );
+        }
+    }
+    fn phases_screen(&self, f: &mut Frame, a: Rect) {
+        let c = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(3)])
+            .split(a);
+        if self.edit_phase {
+            // Editing a phase provider/model
+            let items: Vec<ListItem> = PROVIDERS
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let models = models_for_provider(p);
+                    let model_list = models.join(", ");
+                    ListItem::new(format!(" {}  — {}", p, model_list)).style(
+                        if i == self.sel_provider {
+                            Style::default().bg(Color::Blue).fg(Color::White)
+                        } else {
+                            Style::default()
+                        },
+                    )
+                })
+                .collect();
+            let phase_name = &self.phase_models[self.phase_sel].0;
+            f.render_widget(
+                List::new(items).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!("📋 Phase: {} — Select Provider", phase_name)),
+                ),
+                c[0],
+            );
+            f.render_widget(
+                Paragraph::new("↑↓ Choose  Enter Confirm  Esc Back")
+                    .block(Block::default().borders(Borders::ALL)),
+                c[1],
+            );
+        } else {
+            let rows: Vec<Row> = SDD_PHASES
+                .iter()
+                .enumerate()
+                .map(|(i, ph)| {
+                    Row::new(vec![
+                        if i == self.phase_sel { "→" } else { " " },
+                        ph,
+                        &self.phase_models[i].1,
+                        &self.phase_models[i].2,
+                    ])
+                    .style(if i == self.phase_sel {
+                        Style::default().bg(Color::Blue).fg(Color::White)
+                    } else {
+                        Style::default()
+                    })
+                })
+                .collect();
+            f.render_widget(
+                Table::new(
+                    rows,
+                    [
+                        Constraint::Length(3),
+                        Constraint::Length(20),
+                        Constraint::Length(15),
+                        Constraint::Length(25),
+                    ],
+                )
+                .header(
+                    Row::new(vec!["", "Phase", "Provider", "Model"])
+                        .style(Style::default().add_modifier(Modifier::BOLD)),
+                )
+                .block(Block::default().borders(Borders::ALL).title(format!(
+                    "📋 SDD Phases — Orchestrator: {}/{} ({})",
+                    self.provider, self.model, self.effort
+                ))),
+                c[0],
+            );
+            f.render_widget(
+                Paragraph::new(
+                    "↑↓ Navigate  Enter Edit phase  Tab/Enter on last: Continue  Esc: Back",
+                )
                 .block(Block::default().borders(Borders::ALL)),
                 c[1],
             );
         }
     }
-    fn pick_phases(&self, f: &mut Frame, a: Rect) {
-        let c = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(3)])
-            .split(a);
-        let rows: Vec<Row> = SDD_PHASES
-            .iter()
-            .enumerate()
-            .map(|(i, ph)| {
-                let prov = &self.profiles[0].provider;
-                let mdl = &self.profiles[0].model;
-                Row::new(vec![
-                    if self.phase_sel == i { "→" } else { " " },
-                    ph,
-                    prov,
-                    mdl,
-                ])
-                .style(if i == self.phase_sel {
-                    Style::default().bg(Color::Blue).fg(Color::White)
-                } else {
-                    Style::default()
-                })
-            })
-            .collect();
-        f.render_widget(
-            Table::new(
-                rows,
-                [
-                    Constraint::Length(3),
-                    Constraint::Length(20),
-                    Constraint::Length(15),
-                    Constraint::Length(25),
-                ],
-            )
-            .header(
-                Row::new(vec!["", "Phase", "Provider", "Model"])
-                    .style(Style::default().add_modifier(Modifier::BOLD)),
-            )
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("📋 SDD Phase Models (Tab: continue)"),
-            ),
-            c[0],
-        );
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                "↑↓: Navigate  Tab: Continue to Execute  Esc: Back",
-                Style::default().fg(Color::DarkGray),
-            ))
-            .block(Block::default().borders(Borders::ALL)),
-            c[1],
-        );
-    }
-    fn review(&self, f: &mut Frame, a: Rect) {
-        let c = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(3)])
-            .split(a);
-        let mut lines = vec![
+    fn execute_screen(&self, f: &mut Frame, a: Rect) {
+        let lines = vec![
             Line::from(Span::styled(
-                "Review your configuration:",
+                "Review & Execute",
                 Style::default().add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(format!(
-                "  Agents ({}): {}",
-                self.agents.iter().filter(|a| a.1).count(),
+                "  Agents: {}",
                 self.agents
                     .iter()
                     .filter(|a| a.1)
@@ -602,49 +644,29 @@ impl Wizard {
                     .join(", ")
             )),
             Line::from(format!(
-                "  Provider: {}  |  Model: {}",
-                self.profiles[0].provider, self.profiles[0].model
+                "  Orchestrator: {}/{} ({})",
+                self.provider, self.model, self.effort
             )),
-            if self.create_profile {
-                Line::from(format!(
-                    "  Profile: {}  |  Phases: {}",
-                    self.profile_name,
-                    SDD_PHASES.len()
-                ))
-            } else {
-                Line::from("  Profile: none (will use defaults)")
-            },
+            Line::from(format!(
+                "  Profile: default ({} phases configured)",
+                self.phase_models.len()
+            )),
             Line::from(""),
             Line::from(Span::styled(
-                "  Tab/Enter: Execute setup  |  Esc: Back  |  q: Quit",
+                "  Tab/Enter: Execute  Esc: Back",
                 Style::default().fg(Color::Cyan),
             )),
         ];
-        if !self.logs.is_empty() {
-            lines.push(Line::from(""));
-            for l in &self.logs {
-                lines.push(Line::from(Span::styled(
-                    l.clone(),
-                    Style::default().fg(Color::Green),
-                )));
-            }
-        }
         f.render_widget(
             Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("▶ Execute")),
-            c[0],
-        );
-        f.render_widget(
-            Paragraph::new("Tab: Run  Esc: Back  q: Quit")
-                .block(Block::default().borders(Borders::ALL)),
-            c[1],
+            a,
         );
     }
-    fn done(&self, f: &mut Frame, a: Rect) {
+    fn done_screen(&self, f: &mut Frame, a: Rect) {
         let lines: Vec<Line> = self
             .logs
             .iter()
-            .enumerate()
-            .map(|(_, l)| {
+            .map(|l| {
                 let style = if l.starts_with("✅") {
                     Style::default()
                         .fg(Color::Green)
@@ -662,11 +684,8 @@ impl Wizard {
             })
             .collect();
         f.render_widget(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("✅ Setup Complete"),
-            ),
+            Paragraph::new(lines)
+                .block(Block::default().borders(Borders::ALL).title("✅ Complete")),
             a,
         );
     }
